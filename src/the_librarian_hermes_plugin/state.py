@@ -88,10 +88,13 @@ class StateStore:
         """Return the stored state, the public default if absent, or raise
         :class:`StateError` if present-but-unreadable/invalid."""
         try:
-            raw = self.path.read_text(encoding="utf-8")
+            # Read bytes + decode explicitly: invalid UTF-8 (a torn/corrupt file)
+            # raises UnicodeDecodeError (a ValueError, NOT an OSError), and must
+            # still fail closed as StateError rather than escape uncaught.
+            raw = self.path.read_bytes().decode("utf-8")
         except FileNotFoundError:
             return PluginState()
-        except OSError as err:
+        except (OSError, UnicodeDecodeError) as err:
             raise StateError(f"cannot read harness state at {self.path}: {err}") from err
         try:
             parsed = json.loads(raw)
@@ -100,12 +103,22 @@ class StateStore:
         return _from_dict(parsed, self.path)
 
     def save(self, state: PluginState) -> None:
-        """Persist atomically with 0700/0600 permissions."""
+        """Persist atomically with 0700/0600 permissions.
+
+        This is a BLIND overwrite. For any read-modify-write — especially privacy
+        transitions, where a lost update could drop ``private`` → ``public`` — use
+        :meth:`update`, which does the load+mutate+save under the lock.
+        """
         with self._lock:
             self._write(state)
 
     def update(self, mutate: Callable[[PluginState], PluginState]) -> PluginState:
-        """Load + mutate + save under the lock; returns the saved state."""
+        """Load + mutate + save under the lock; returns the saved state. The safe
+        read-modify-write primitive (use this, not load()+save(), for mutations).
+
+        Note: the lock is per-:class:`StateStore` instance, so the mutual-exclusion
+        guarantee is "one StateStore per session", not merely one process.
+        """
         with self._lock:
             nxt = mutate(self.load())
             self._write(nxt)
