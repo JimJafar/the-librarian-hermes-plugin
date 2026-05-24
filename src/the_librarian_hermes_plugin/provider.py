@@ -24,6 +24,7 @@ import os
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -43,6 +44,7 @@ StateStoreFactory = Callable[[str, str], StateStore]
 
 _CONFIG_FILENAME = "config.json"
 _PROVIDER_NAME = "librarian"
+_PRIVATE_END_REASON = "switching to private mode"
 
 
 @dataclass(frozen=True)
@@ -198,6 +200,58 @@ class LibrarianProvider(_Base):
         self._state = None
         self._client = None
         self._session_id = None
+
+    # ---- privacy transitions (driven by the pre_gateway_dispatch gate) ----
+
+    def enter_private(self) -> str:
+        """Go off-record. Writes private state FIRST (so future calls are
+        suppressed even if the end fails), then ends the attached session with a
+        neutral reason (§4.3). Idempotent."""
+        session = self._current_session()
+        self._set_privacy("private", clear_session=True, stamp_entered=True)
+        if session is not None:
+            self._call_soft(
+                "end_session",
+                self._agent_args({"session_id": session, "summary": _PRIVATE_END_REASON}),
+            )
+        return "private"
+
+    def exit_private(self) -> str:
+        """Go back on-record. The next turn starts a fresh session (the prior one
+        was ended on entering private); this turn is not recorded."""
+        self._set_privacy("public", clear_session=True, stamp_entered=False)
+        return "public"
+
+    def toggle_privacy(self) -> str:
+        return self.exit_private() if self._read_privacy() == "private" else self.enter_private()
+
+    def _read_privacy(self) -> str:
+        # Actual current privacy for the toggle decision; fail closed to private.
+        if self._state is None:
+            return "private"
+        try:
+            return self._state.load().privacy
+        except StateError:
+            return "private"
+
+    def _set_privacy(self, privacy: str, *, clear_session: bool, stamp_entered: bool) -> None:
+        state = self._state
+        if state is None:
+            return
+        # timezone.utc (not datetime.UTC, which is 3.11+) — the package targets 3.10.
+        entered = datetime.now(timezone.utc).isoformat() if stamp_entered else None
+
+        def mutate(cur: PluginState) -> PluginState:
+            return PluginState(
+                privacy="private" if privacy == "private" else "public",
+                librarian_session_id=None if clear_session else cur.librarian_session_id,
+                entered_private_at=entered if privacy == "private" else None,
+            )
+
+        try:
+            state.update(mutate)
+        except StateError as err:
+            self._log("error", f"librarian: could not set privacy={privacy}: {err}")
 
     # ---- recall (read) ----
 
