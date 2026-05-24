@@ -3,10 +3,17 @@
 from __future__ import annotations
 
 import json
+import traceback
 
 import pytest
 
-from the_librarian_hermes_plugin.client import LibrarianClient, LibrarianClientError
+from the_librarian_hermes_plugin import client as client_mod
+from the_librarian_hermes_plugin.client import (
+    LibrarianClient,
+    LibrarianClientError,
+    _NoRedirect,
+    _read_capped,
+)
 
 ENDPOINT = "https://librarian.example.com/mcp"
 TOKEN = "secret-token-value"  # noqa: S105 - test fixture, not a real secret
@@ -106,17 +113,64 @@ def test_missing_content_maps_to_malformed() -> None:
     assert exc.value.kind == "malformed"
 
 
-def test_token_never_appears_in_error_messages() -> None:
+def test_token_never_appears_in_error_chain_or_traceback() -> None:
+    # The token is supplied only via the Authorization header; urllib never echoes
+    # request headers into its exceptions, and our messages never reference the
+    # token. So across realistic failure modes it must never surface — in the
+    # top-level error, the cause chain, or the rendered traceback.
     scenarios = [
         lambda *_: (401, b"unauthorized"),
         lambda *_: (200, b"not json"),
-        lambda *_: (_ for _ in ()).throw(TimeoutError()),
-        lambda *_: (_ for _ in ()).throw(OSError("refused")),
+        lambda *_: (_ for _ in ()).throw(TimeoutError("timed out")),
+        lambda *_: (_ for _ in ()).throw(OSError("connection refused")),
     ]
     for transport in scenarios:
         client, _ = _client_with(transport)
         try:
             client.call_tool("recall", {})
         except LibrarianClientError as err:
-            assert TOKEN not in str(err)
-            assert TOKEN not in repr(err)
+            rendered = []
+            cur: BaseException | None = err
+            while cur is not None:
+                rendered += [str(cur), repr(cur)]
+                cur = cur.__cause__ or cur.__context__
+            rendered.append("".join(traceback.format_exception(err)))
+            assert all(TOKEN not in s for s in rendered)
+
+
+def test_rejects_non_http_scheme() -> None:
+    with pytest.raises(ValueError, match="http"):
+        LibrarianClient("file:///etc/passwd", TOKEN)
+    with pytest.raises(ValueError, match="http"):
+        LibrarianClient("ftp://host/x", TOKEN)
+
+
+def test_http_and_https_schemes_accepted() -> None:
+    LibrarianClient("http://127.0.0.1:3838/mcp", TOKEN)
+    LibrarianClient("https://librarian.example.com/mcp", TOKEN)
+
+
+def test_no_redirect_handler_refuses_to_follow() -> None:
+    # The Critical fix: redirects are never followed (they would carry the
+    # Authorization header to the redirect target).
+    handler = _NoRedirect()
+    assert handler.redirect_request(None, None, 302, "Found", {}, "https://evil/") is None
+
+
+def test_redirect_status_maps_to_http_error() -> None:
+    client, _ = _client_with(lambda *_: (302, b""))
+    with pytest.raises(LibrarianClientError) as exc:
+        client.call_tool("recall", {})
+    assert exc.value.kind == "http"
+    assert exc.value.status == 302
+
+
+def test_read_capped_rejects_oversize_body(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(client_mod, "_MAX_RESPONSE_BYTES", 8)
+
+    class _FP:
+        def read(self, n: int = -1) -> bytes:
+            return b"x" * (n if n >= 0 else 32)
+
+    with pytest.raises(OSError, match="size cap"):
+        _read_capped(_FP())

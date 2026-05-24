@@ -41,7 +41,11 @@ target-version = "py310"
 src = ["src", "tests"]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B"]
+select = ["E", "F", "I", "UP", "B", "S"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests use assert (S101) and dummy token fixtures (S105/S106).
+"tests/**" = ["S101", "S105", "S106"]
 
 [tool.mypy]
 python_version = "3.10"
