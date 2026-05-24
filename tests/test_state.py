@@ -44,6 +44,17 @@ def test_corrupt_state_raises_state_error(tmp_path: Path) -> None:
         store.load()
 
 
+def test_invalid_utf8_raises_state_error(tmp_path: Path) -> None:
+    # A torn/corrupt file with invalid UTF-8 must fail closed as StateError,
+    # not escape as a raw UnicodeDecodeError (which would dodge the caller's
+    # fail-closed handling and could drop the privacy flag).
+    store = _store(tmp_path)
+    store.path.parent.mkdir(parents=True, exist_ok=True)
+    store.path.write_bytes(b"\xff\xfe\x00 garbage")
+    with pytest.raises(StateError):
+        store.load()
+
+
 def test_permissions_file_0600_dir_0700(tmp_path: Path) -> None:
     store = _store(tmp_path)
     store.save(PluginState())
