@@ -1,0 +1,12 @@
+# Hermes plugin manifest. Exact schema to be confirmed against a real Hermes
+# install; fields below follow the plugin docs (name, version, kind, hooks,
+# requires_env). Pip-installed discovery is via the pyproject entry-point group
+# `hermes_agent.plugins`; this manifest documents the plugin for `hermes plugins`.
+name: librarian
+version: 0.0.1
+kind: memory
+description: Memory Provider backed by The Librarian — recall/remember, sessions, and an off-record privacy gate.
+hooks:
+  - pre_gateway_dispatch
+requires_env:
+  - LIBRARIAN_AGENT_TOKEN
