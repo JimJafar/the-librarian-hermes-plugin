@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from .cli import register_cli
 from .privacy_gate import make_privacy_gate
 from .provider import LibrarianProvider
 
@@ -33,3 +34,4 @@ def register(ctx: Any) -> None:
     provider = LibrarianProvider(logger=_log)
     ctx.register_memory_provider(provider)
     ctx.register_hook("pre_gateway_dispatch", make_privacy_gate(provider))
+    register_cli(ctx)  # no-op if ctx has no register_cli_command
