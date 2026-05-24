@@ -9,10 +9,11 @@ from the_librarian_hermes_plugin.client import LibrarianClientError
 from the_librarian_hermes_plugin.provider import (
     LibrarianConfig,
     LibrarianProvider,
+    _extract_session_id,
     load_config,
     save_config,
 )
-from the_librarian_hermes_plugin.state import PluginState, StateStore
+from the_librarian_hermes_plugin.state import PluginState, StateError, StateStore
 
 SESSION = "sess-1"
 
@@ -227,3 +228,43 @@ def test_is_available_reflects_config(tmp_path: Path) -> None:
 
 def test_provider_name(tmp_path: Path) -> None:
     assert LibrarianProvider().name == "librarian"
+
+
+# ---- fail-closed on unreadable state (must not raise out of any hook) ----
+
+
+class _BrokenStore:
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
+        pass
+
+    def load(self) -> PluginState:
+        raise StateError("corrupt")
+
+    def update(self, _mutate: object) -> PluginState:
+        raise StateError("corrupt")
+
+    def save(self, _state: object) -> None:
+        raise StateError("corrupt")
+
+
+def test_state_error_is_swallowed_by_every_hook(tmp_path: Path) -> None:
+    client = FakeClient()
+    cfg = LibrarianConfig(endpoint="https://x/mcp", token="t")
+    p = LibrarianProvider(client=client, config=cfg, state_store_factory=_BrokenStore)
+    p.initialize(SESSION, hermes_home=str(tmp_path))
+    # Unreadable state → treated as private → no call, and nothing raises.
+    assert p.prefetch("q") == ""
+    assert p.system_prompt_block() == ""
+    p.sync_turn("a", "b")
+    p.on_pre_compress([])
+    p.on_session_end([])
+    p.on_memory_write("add", "t", "b")
+    assert "Off the record" in p.handle_tool_call("recall", {"query": "q"})
+    assert client.calls == []
+
+
+def test_extract_session_id_boundaries() -> None:
+    assert _extract_session_id("Session started: ses_abc123.") == "ses_abc123"
+    assert _extract_session_id("created ses_abc.def now") == "ses_abc"
+    assert _extract_session_id("nothing here") is None
+    assert _extract_session_id("preses_abc") is None

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -195,6 +196,8 @@ class LibrarianProvider(_Base):
 
     def shutdown(self) -> None:
         self._state = None
+        self._client = None
+        self._session_id = None
 
     # ---- recall (read) ----
 
@@ -260,11 +263,10 @@ class LibrarianProvider(_Base):
         if action != "add":
             self._log("info", f"librarian: not mirroring built-in '{action}' write (v1)")
             return
+        title = (target or content).strip()[:120] or "Imported note"
         self._call_soft(
             "remember",
-            self._agent_args(
-                {"title": (target or content)[:120], "body": content, "category": "lessons"}
-            ),
+            self._agent_args({"title": title, "body": content, "category": "lessons"}),
         )
 
     # ---- agent-facing tools ----
@@ -310,6 +312,8 @@ class LibrarianProvider(_Base):
     def handle_tool_call(self, name: str, args: dict[str, Any]) -> str:
         if name not in {"recall", "remember", "verify_memory"}:
             return f"Unknown Librarian tool: {name}"
+        if not isinstance(args, dict):
+            return f"The Librarian tool {name} expects an object of arguments."
         if self._is_private():
             return "Off the record — The Librarian is paused; nothing was recalled or stored."
         scoped = self._agent_args(dict(args)) if name != "verify_memory" else dict(args)
@@ -342,6 +346,38 @@ class LibrarianProvider(_Base):
         existing = self._current_session()
         if existing is not None:
             return existing
+        state = self._state
+        if state is None:
+            return None
+        # Create-or-get atomically under the state lock so two racing first turns
+        # (e.g. the daemon sync_turn vs another caller) converge on ONE session:
+        # the loser's mutate sees the id the winner just wrote and reuses it. The
+        # start_session network call runs inside the lock — brief, and the price of
+        # never orphaning a session.
+        captured: dict[str, str | None] = {"id": None}
+
+        def mutate(cur: PluginState) -> PluginState:
+            if cur.librarian_session_id is not None:
+                captured["id"] = cur.librarian_session_id
+                return cur
+            session_id = self._start_session_call()
+            captured["id"] = session_id
+            if session_id is None:
+                return cur
+            return PluginState(
+                privacy=cur.privacy,
+                librarian_session_id=session_id,
+                entered_private_at=cur.entered_private_at,
+            )
+
+        try:
+            state.update(mutate)
+        except StateError as err:
+            self._log("error", f"librarian: could not persist session id: {err}")
+            return None
+        return captured["id"]
+
+    def _start_session_call(self) -> str | None:
         try:
             client = self._require_client()
         except _Inert:
@@ -357,32 +393,18 @@ class LibrarianProvider(_Base):
         session_id = _extract_session_id(text)
         if session_id is None:
             self._log("warn", "librarian: start_session returned no id")
-            return None
-        try:
-            self._persist_session(session_id)
-        except StateError as err:
-            self._log("error", f"librarian: could not persist session id: {err}")
-            return None
         return session_id
-
-    def _persist_session(self, session_id: str) -> None:
-        state = self._state
-        if state is None:
-            return
-        state.update(
-            lambda cur: PluginState(
-                privacy=cur.privacy,
-                librarian_session_id=session_id,
-                entered_private_at=cur.entered_private_at,
-            )
-        )
 
     def _detach(self) -> None:
         if self._state is None:
             return
         try:
             self._state.update(
-                lambda cur: PluginState(privacy=cur.privacy, librarian_session_id=None)
+                lambda cur: PluginState(
+                    privacy=cur.privacy,
+                    librarian_session_id=None,
+                    entered_private_at=cur.entered_private_at,
+                )
             )
         except StateError as err:
             self._log("warn", f"librarian: could not detach session: {err}")
@@ -423,10 +445,11 @@ def _turn_summary(user_content: str, assistant_content: str) -> str:
     return f"User: {user}\nAssistant: {assistant}".strip()
 
 
+_SESSION_ID_RE = re.compile(r"\bses_[A-Za-z0-9]+\b")
+
+
 def _extract_session_id(text: str) -> str | None:
-    # start_session returns formatted text; pull the first ses_… token.
-    for token in text.replace("\n", " ").split():
-        cleaned = token.strip(".,:;()[]\"'")
-        if cleaned.startswith("ses_") and len(cleaned) > 4:
-            return cleaned
-    return None
+    # start_session returns formatted text; pull the first ses_… token. The word
+    # boundary stops at adjacent punctuation so we never capture trailing junk.
+    match = _SESSION_ID_RE.search(text)
+    return match.group(0) if match else None
