@@ -1,9 +1,16 @@
 """Local plugin state — the attached Librarian session id + off-record flag.
 
-Scoped under the Hermes profile (``hermes_home``) and keyed per Hermes session,
-mirroring the TS lifecycle helper's local-state design but simpler (Hermes gives
-explicit lifecycle hooks, and one provider instance runs per session/process, so
-an in-process lock suffices — no cross-process lockfile).
+Scoped per Hermes profile (``hermes_home``), in ONE file shared by every provider
+instance under that profile. This is deliberate: Hermes loads the plugin twice —
+once by the memory-provider loader (the instance the ``MemoryManager`` initializes
+and drives) and once by the general plugin loader (the instance the
+``pre_gateway_dispatch`` gate and the ``/lib-session-*`` slash commands are bound
+to). Those are *different Python objects in the same process*, and Hermes exposes
+no way to share one. Keying state per profile (not per Hermes session) lets them
+coordinate through the one thing they share — the filesystem — so a privacy toggle
+from the gate, or an attach from a slash command, is seen by the live memory
+provider. The trade-off: one active Librarian session per profile, not per
+concurrent Hermes session (the ABC notes per-session scoping is optional).
 
 Invariants:
 - the file never holds prompt text or summaries (ids + flags only);
@@ -14,7 +21,6 @@ Invariants:
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import threading
@@ -46,11 +52,10 @@ def _state_dir(hermes_home: str) -> Path:
     return Path(hermes_home) / "librarian-plugin"
 
 
-def _state_path(hermes_home: str, session_id: str) -> Path:
-    # Hash the session id into the filename so an arbitrary id can't escape the
-    # state dir or collide by concatenation.
-    digest = hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:40]
-    return _state_dir(hermes_home) / f"{digest}.json"
+def _state_path(hermes_home: str) -> Path:
+    # One state file per profile — shared across the memory-provider and
+    # general-plugin instances of the plugin (see the module docstring).
+    return _state_dir(hermes_home) / "state.json"
 
 
 def _to_dict(state: PluginState) -> dict[str, object]:
@@ -78,10 +83,10 @@ def _from_dict(raw: object, path: Path) -> PluginState:
 
 
 class StateStore:
-    """Read/modify/write the per-session local state under ``hermes_home``."""
+    """Read/modify/write the per-profile local state under ``hermes_home``."""
 
-    def __init__(self, hermes_home: str, session_id: str) -> None:
-        self.path = _state_path(hermes_home, session_id)
+    def __init__(self, hermes_home: str) -> None:
+        self.path = _state_path(hermes_home)
         self._lock = threading.Lock()
 
     def load(self) -> PluginState:
@@ -116,8 +121,12 @@ class StateStore:
         """Load + mutate + save under the lock; returns the saved state. The safe
         read-modify-write primitive (use this, not load()+save(), for mutations).
 
-        Note: the lock is per-:class:`StateStore` instance, so the mutual-exclusion
-        guarantee is "one StateStore per session", not merely one process.
+        Note: the lock is per-:class:`StateStore` instance. Two instances of the
+        plugin (memory-provider + general-plugin loaders) share this profile file
+        but hold separate locks, so this guards intra-instance races only;
+        cross-instance safety rests on the atomic ``os.replace`` write plus the
+        effectively sequential access pattern (the gate writes privacy before a
+        turn; the provider writes the session id after one).
         """
         with self._lock:
             nxt = mutate(self.load())

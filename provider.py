@@ -1,9 +1,8 @@
 """The Librarian-backed Hermes Memory Provider.
 
 Maps the Hermes ``MemoryProvider`` hooks onto Librarian MCP tools (via
-:class:`~the_librarian_hermes_plugin.client.LibrarianClient`), gated by the local
-off-record flag (:mod:`~the_librarian_hermes_plugin.state`) and the ported privacy
-detector. Two invariants dominate:
+:class:`client.LibrarianClient`), gated by the local off-record flag
+(:mod:`state`) and the ported privacy detector. Two invariants dominate:
 
 - **Off-record:** while private, no Librarian call is made (prefetch/system block
   return empty; sync/checkpoint/pause/tool-calls are suppressed).
@@ -12,9 +11,10 @@ detector. Two invariants dominate:
 
 The Hermes ``MemoryProvider`` ABC lives in the Hermes codebase (provided at
 runtime), not installed here, so we subclass it when importable and ``object``
-otherwise. The exact ABC method names/shapes + config plumbing are documented
-from the Hermes plugin docs and must be confirmed against a real Hermes install
-(see README / build notes) — the mapping logic below is what these tests cover.
+otherwise. Method names/shapes match ``agent/memory_provider.py`` in
+NousResearch/hermes-agent (e.g. ``prefetch``/``sync_turn`` take a keyword
+``session_id``; ``handle_tool_call(tool_name, args, **kwargs)``;
+``on_pre_compress`` returns ``str``).
 """
 
 from __future__ import annotations
@@ -40,7 +40,7 @@ else:
         _Base = object
 
 LogFn = Callable[[str, str], None]
-StateStoreFactory = Callable[[str, str], StateStore]
+StateStoreFactory = Callable[[str], StateStore]
 
 _CONFIG_FILENAME = "config.json"
 _PROVIDER_NAME = "librarian"
@@ -188,13 +188,29 @@ class LibrarianProvider(_Base):
             self._log("error", "librarian: no hermes_home supplied; provider inert this session")
             self._state = None
             return
-        self._state = self._make_state(hermes_home, session_id)
+        self._wire(hermes_home)
+
+    def _wire(self, hermes_home: str) -> None:
+        """Set up per-profile state + (if configured) the client for *hermes_home*."""
+        self._state = self._make_state(hermes_home)
         if self._config is None:
             self._config = load_config(hermes_home, self._env)
         if self._client is None and self._config is not None:
             self._client = LibrarianClient(
                 self._config.endpoint, self._config.token, timeout_ms=self._config.timeout_ms
             )
+
+    def _ensure_runtime(self) -> None:
+        """Lazily wire an instance that was never ``initialize()``-d.
+
+        The general-plugin loader (privacy gate + slash commands) builds a provider
+        via ``register()`` but never calls ``initialize()`` — only the
+        ``MemoryManager`` does, on its own instance. Resolve ``HERMES_HOME`` from
+        the environment so the gate/command paths attach to the SAME per-profile
+        state + config the live memory provider uses (see ``state`` module)."""
+        if self._state is None:
+            hermes_home = self._env.get("HERMES_HOME") or str(Path.home() / ".hermes")
+            self._wire(hermes_home)
 
     def shutdown(self) -> None:
         self._state = None
@@ -207,6 +223,7 @@ class LibrarianProvider(_Base):
         """Go off-record. Writes private state FIRST (so future calls are
         suppressed even if the end fails), then ends the attached session with a
         neutral reason (§4.3). Idempotent."""
+        self._ensure_runtime()
         session = self._current_session()
         self._set_privacy("private", clear_session=True, stamp_entered=True)
         if session is not None:
@@ -219,10 +236,12 @@ class LibrarianProvider(_Base):
     def exit_private(self) -> str:
         """Go back on-record. The next turn starts a fresh session (the prior one
         was ended on entering private); this turn is not recorded."""
+        self._ensure_runtime()
         self._set_privacy("public", clear_session=True, stamp_entered=False)
         return "public"
 
     def toggle_privacy(self) -> str:
+        self._ensure_runtime()
         return self.exit_private() if self._read_privacy() == "private" else self.enter_private()
 
     def _read_privacy(self) -> str:
@@ -262,17 +281,21 @@ class LibrarianProvider(_Base):
             return ""
         return self._call_text("start_context", self._agent_args({}))
 
-    def prefetch(self, query: str) -> str:
-        """Targeted recall before an API call. Empty while private or on failure."""
+    def prefetch(self, query: str, *, session_id: str = "") -> str:
+        """Targeted recall before an API call. Empty while private or on failure.
+
+        ``session_id`` (the ABC's per-concurrent-session hint) is accepted but not
+        used for scoping: this provider keeps one active session per profile."""
         if self._is_private():
             return ""
         return self._call_text("recall", self._agent_args({"query": query}))
 
     # ---- write (turn persistence) ----
 
-    def sync_turn(self, user_content: str, assistant_content: str) -> None:
+    def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
         """Record the completed turn to the Librarian session (must be non-blocking;
-        Hermes runs this in a daemon thread). Skipped while private."""
+        Hermes runs this in a daemon thread). Skipped while private. ``session_id``
+        is accepted per the ABC but not used (one active session per profile)."""
         if self._is_private():
             return
         session = self._ensure_session()
@@ -284,16 +307,35 @@ class LibrarianProvider(_Base):
             self._agent_args({"session_id": session, "type": "turn", "summary": summary}),
         )
 
-    def on_pre_compress(self, messages: Sequence[object]) -> None:
+    def on_pre_compress(self, messages: Sequence[object]) -> str:
+        """Checkpoint the session before compaction. Returns "" — this provider
+        contributes no text to the compression summary (the ABC allows that)."""
         if self._is_private():
-            return
+            return ""
         session = self._current_session()
         if session is None:
-            return
+            return ""
         self._call_soft(
             "checkpoint_session",
             self._agent_args({"session_id": session, "summary": "Context compaction checkpoint."}),
         )
+        return ""
+
+    def on_session_switch(
+        self,
+        new_session_id: str,
+        *,
+        parent_session_id: str = "",
+        reset: bool = False,
+        **kwargs: Any,
+    ) -> None:
+        """Hermes rotated the agent's session id (/resume, /branch, /reset, /new,
+        compression). Update the cached id used for ``source_ref``; on a genuine
+        reset (new conversation) detach so the next turn opens a fresh Librarian
+        session rather than appending to the previous one."""
+        self._session_id = new_session_id
+        if reset:
+            self._detach()
 
     def on_session_end(self, messages: Sequence[object]) -> None:
         # Pause (never end — §5.4); detach locally so a later turn resumes by match.
@@ -308,10 +350,17 @@ class LibrarianProvider(_Base):
         )
         self._detach()
 
-    def on_memory_write(self, action: str, target: str, content: str) -> None:
+    def on_memory_write(
+        self,
+        action: str,
+        target: str,
+        content: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
         """Mirror a built-in memory write into the Librarian (safety net). Only
         `add` maps cleanly to `remember`; replace/remove key off MEMORY.md substring
-        matching with no Librarian-id correspondence, so they're not mirrored (v1)."""
+        matching with no Librarian-id correspondence, so they're not mirrored (v1).
+        ``metadata`` (write provenance) is accepted per the ABC but unused in v1."""
         if self._is_private():
             return
         if action != "add":
@@ -363,19 +412,91 @@ class LibrarianProvider(_Base):
             },
         ]
 
-    def handle_tool_call(self, name: str, args: dict[str, Any]) -> str:
-        if name not in {"recall", "remember", "verify_memory"}:
-            return f"Unknown Librarian tool: {name}"
+    def handle_tool_call(self, tool_name: str, args: dict[str, Any], **kwargs: Any) -> str:
+        if tool_name not in {"recall", "remember", "verify_memory"}:
+            return f"Unknown Librarian tool: {tool_name}"
         if not isinstance(args, dict):
-            return f"The Librarian tool {name} expects an object of arguments."
+            return f"The Librarian tool {tool_name} expects an object of arguments."
         if self._is_private():
             return "Off the record — The Librarian is paused; nothing was recalled or stored."
-        scoped = self._agent_args(dict(args)) if name != "verify_memory" else dict(args)
+        scoped = self._agent_args(dict(args)) if tool_name != "verify_memory" else dict(args)
+        try:
+            return self._require_client().call_tool(tool_name, scoped)
+        except (LibrarianClientError, _Inert) as err:
+            self._log("warn", f"librarian: tool {tool_name} failed: {err}")
+            return f"The Librarian is unavailable right now ({tool_name} could not complete)."
+
+    # ---- slash-command helpers (driven by commands.py) ----
+
+    def is_private(self) -> bool:
+        """Public off-record check for slash-command handlers."""
+        self._ensure_runtime()
+        return self._is_private()
+
+    def current_session_id(self) -> str | None:
+        """The attached Librarian session id, or None."""
+        self._ensure_runtime()
+        return self._current_session()
+
+    def detach(self) -> None:
+        """Forget the attached session locally (no Librarian call)."""
+        self._ensure_runtime()
+        self._detach()
+
+    def run_tool(self, name: str, args: dict[str, Any], *, scope: bool = True) -> str:
+        """Privacy-gated, fail-soft text call for slash commands. Returns the
+        tool's text, or a short human message while private / unavailable."""
+        self._ensure_runtime()
+        if self._is_private():
+            return "Off the record — The Librarian is paused; nothing was sent."
+        scoped = self._agent_args(dict(args)) if scope else dict(args)
         try:
             return self._require_client().call_tool(name, scoped)
         except (LibrarianClientError, _Inert) as err:
-            self._log("warn", f"librarian: tool {name} failed: {err}")
+            self._log("warn", f"librarian: {name} failed: {err}")
             return f"The Librarian is unavailable right now ({name} could not complete)."
+
+    def attach_session_id(self, session_id: str) -> None:
+        """Attach *session_id* locally so subsequent turns record to it."""
+        self._ensure_runtime()
+        state = self._state
+        if state is None:
+            return
+        try:
+            state.update(
+                lambda cur: PluginState(
+                    privacy=cur.privacy,
+                    librarian_session_id=session_id,
+                    entered_private_at=cur.entered_private_at,
+                )
+            )
+        except StateError as err:
+            self._log("warn", f"librarian: could not attach session {session_id}: {err}")
+
+    def start_new_session(self, title: str | None = None) -> str | None:
+        """Start a fresh Librarian session and attach it (for /lib-session-start).
+        No-op while private. Returns the new session id, or None on failure."""
+        self._ensure_runtime()
+        if self._is_private():
+            return None
+        try:
+            client = self._require_client()
+        except _Inert:
+            return None
+        args = self._agent_args({"harness": "hermes", "start_summary": title or "Hermes session."})
+        if title:
+            args["title"] = title
+        if self._session_id is not None:
+            args["source_ref"] = f"hermes:session:{self._session_id}"
+        try:
+            text = client.call_tool("start_session", args)
+        except LibrarianClientError as err:
+            self._log("warn", f"librarian: start_session failed: {err}")
+            return None
+        session_id = _extract_session_id(text)
+        if session_id is not None:
+            self.attach_session_id(session_id)
+        return session_id
 
     # ---- internals ----
 

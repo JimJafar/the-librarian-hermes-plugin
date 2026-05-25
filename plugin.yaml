@@ -1,12 +1,18 @@
-# Hermes plugin manifest. Exact schema to be confirmed against a real Hermes
-# install; fields below follow the plugin docs (name, version, kind, hooks,
-# requires_env). Pip-installed discovery is via the pyproject entry-point group
-# `hermes_agent.plugins`; this manifest documents the plugin for `hermes plugins`.
+# Hermes plugin manifest (schema confirmed against NousResearch/hermes-agent:
+# plugins/memory/*/plugin.yaml + hermes_cli/plugins_cmd.py). Fields: name,
+# version, description, requires_env, hooks, pip_dependencies. There is NO
+# `kind` field — a memory provider is recognised by living in a plugin dir whose
+# __init__.py calls register_memory_provider (directory scan, not the manifest).
+#
+# `hermes plugins install` names the install dir from `name` below, so this lands
+# at ~/.hermes/plugins/librarian/ regardless of the repo name.
 name: librarian
 version: 0.0.1
-kind: memory
-description: Memory Provider backed by The Librarian — recall/remember, sessions, and an off-record privacy gate.
-hooks:
-  - pre_gateway_dispatch
+description: Memory Provider backed by The Librarian — recall/remember, sessions, slash commands, and an off-record privacy gate.
+# requires_env drives the install-time secret prompt. The endpoint is collected
+# by `hermes memory setup` (get_config_schema), not here.
 requires_env:
   - LIBRARIAN_AGENT_TOKEN
+# Hook registered when enabled as a general plugin (`hermes plugins enable librarian`).
+hooks:
+  - pre_gateway_dispatch

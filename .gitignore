@@ -20,3 +20,6 @@ AUTONOMOUS-BUILD-NOTES-*.md
 
 # OS
 .DS_Store
+
+# mypy staging dir (scripts/typecheck.sh)
+.mypy-stage/

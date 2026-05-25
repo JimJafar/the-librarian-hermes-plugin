@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from the_librarian_hermes_plugin.cli import migrate, register_cli
-from the_librarian_hermes_plugin.client import LibrarianClientError
+from librarian.cli import migrate, register_cli
+from librarian.client import LibrarianClientError
 
 
 class FakeClient:

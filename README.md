@@ -5,20 +5,35 @@ by [The Librarian](https://github.com/JimJafar/the-librarian).
 
 It makes The Librarian the agent's durable memory + session layer: recall is injected at
 session start and on demand, the agent can `recall`/`remember`/`verify_memory` via tools,
-each turn is recorded to a Librarian session, and an off-record privacy gate suppresses
-recording on request. It talks to a Librarian **HTTP MCP server at a configurable
-endpoint**, so Hermes and the Librarian can live on different servers.
+each turn is recorded to a Librarian session, `/lib-session-*` slash commands drive the
+session lifecycle, and an off-record privacy gate suppresses recording on request. It talks
+to a Librarian **HTTP MCP server at a configurable endpoint**, so Hermes and the Librarian
+can live on different servers.
 
 ## Install
 
+Hermes discovers memory providers by **directory scan** (`~/.hermes/plugins/<name>/`), not
+via pip — so this repo IS the plugin directory (modules at the repo root). Install it with
+Hermes' git-based installer:
+
 ```sh
-pip install the-librarian-hermes-plugin     # PyPI (or: pip install -e . from a checkout)
-hermes plugins enable librarian
-hermes memory setup                         # prompts for endpoint + token (below)
+hermes plugins install JimJafar/the-librarian-hermes-plugin
 ```
 
-Hermes discovers the plugin via the `hermes_agent.plugins` entry point — no manual copy
-into `~/.hermes/plugins/` needed.
+This clones the repo into `~/.hermes/plugins/librarian/` (the dir name comes from `name:` in
+`plugin.yaml`, not the repo name) and prompts for the `LIBRARIAN_AGENT_TOKEN` secret.
+
+Then wire it up — there are **two activation steps**, because Hermes loads the plugin under
+two loaders:
+
+```sh
+hermes memory setup            # select "librarian", enter the endpoint (provider half)
+hermes plugins enable librarian  # privacy gate + /lib-session-* slash commands (general half)
+```
+
+`hermes memory setup` activates the **memory provider** (recall/remember/turn recording).
+`hermes plugins enable librarian` registers the **`pre_gateway_dispatch` privacy gate** and
+the **slash commands** — these don't load from `hermes memory setup` alone.
 
 ## Configure
 
@@ -27,13 +42,14 @@ into `~/.hermes/plugins/` needed.
 | Field | Required | Notes |
 | --- | --- | --- |
 | `endpoint` | yes | Librarian HTTP MCP URL, e.g. `https://librarian.example.com/mcp` |
-| `token` | yes | Bearer token (stored as the `LIBRARIAN_AGENT_TOKEN` secret — never written to disk) |
+| `token` | yes | Bearer token (the `LIBRARIAN_AGENT_TOKEN` secret → `<hermes_home>/.env`; never written to the config file) |
 | `agent_id` | no | Canonical agent id; omit if the token is agent-bound server-side |
 | `project_key` | no | Default project scope |
 | `timeout_ms` | no | Per-call timeout (default 15000) |
 
-Non-secret values are stored under `<hermes_home>/librarian-plugin/config.json` (0600);
-the token comes only from the `LIBRARIAN_AGENT_TOKEN` environment variable.
+Non-secret values are stored under `<hermes_home>/librarian-plugin/config.json` (0600); the
+token comes only from the `LIBRARIAN_AGENT_TOKEN` environment variable (written to
+`<hermes_home>/.env` by setup).
 
 ### Remote deployment (Hermes and the Librarian on different servers)
 
@@ -48,6 +64,21 @@ Then set `endpoint` to your public URL (behind TLS) and `token` to `<strong-toke
 Librarian's no-auth mode is **localhost-only**, so a remote endpoint **must** carry a token
 over **HTTPS**. (`LIBRARIAN_AGENT_TOKENS` binds the token to an `agent_id` server-side, so
 attribution is correct without setting `agent_id` here.)
+
+## Slash commands
+
+Registered when the plugin is enabled as a general plugin (`hermes plugins enable librarian`):
+
+| Command | The Librarian | Notes |
+| --- | --- | --- |
+| `/lib-session-start [title] [--private]` | `start_session` | `--private` goes off-record instead |
+| `/lib-session-list [--include-ended]` | `list_sessions` | |
+| `/lib-session-resume <session_id>` | `continue_session` (+ attach) | bare call lists sessions to pick from |
+| `/lib-session-checkpoint [summary]` | `checkpoint_session` | needs an attached session |
+| `/lib-session-pause` | `pause_session` | then detaches |
+| `/lib-session-end [summary]` | `end_session` | then detaches |
+| `/lib-session-search <query>` | `search_sessions` | |
+| `/lib-toggle-private` | (local) | toggle off-record mode |
 
 ## Migrate built-in memory (one-time)
 
@@ -69,11 +100,14 @@ a partial failure never loses data.
 | --- | --- | --- |
 | `initialize` | — | local setup; session created lazily on the first recorded turn |
 | `system_prompt_block` | `start_context` | frozen recall snapshot at session start (prefix-cache-friendly) |
-| `prefetch` | `recall` | targeted recall before an API call |
-| `sync_turn` | `start_session` (once) + `record_session_event` | non-blocking turn recording |
-| `on_pre_compress` | `checkpoint_session` | checkpoint before compaction |
+| `prefetch(query, *, session_id)` | `recall` | targeted recall before an API call |
+| `sync_turn(user, asst, *, session_id)` | `start_session` (once) + `record_session_event` | non-blocking turn recording |
+| `on_pre_compress` | `checkpoint_session` | checkpoint before compaction (returns `""`) |
+| `on_session_switch` | (local) | re-points `source_ref`; detaches on `reset` |
 | `on_session_end` | `pause_session` | pause (never auto-end); detach locally |
+| `on_memory_write(add)` | `remember` | mirror built-in `add` writes |
 | tools | `recall` / `remember` / `verify_memory` | agent-driven memory |
+| `pre_gateway_dispatch` | (local) | the off-record privacy gate |
 
 Two invariants:
 
@@ -85,19 +119,30 @@ Two invariants:
   to empty and writes are best-effort. (A remote store can be down; the built-in memory
   stays local.)
 
+### Two loaders, one state file
+
+Hermes loads the plugin twice — the **memory-provider loader** (`hermes memory setup`)
+builds the provider it drives; the **general plugin loader** (`hermes plugins enable`) builds
+a separate instance for the gate + slash commands and never calls `initialize()`. Those are
+different objects in the same process, and Hermes exposes no way to share one. They
+coordinate through a single per-profile state file (`<hermes_home>/librarian-plugin/
+state.json`), and the gate/command instance lazily resolves `HERMES_HOME`. The trade-off:
+**one active Librarian session per profile**, not per concurrent Hermes session.
+
 ## Status / compatibility
 
-Built and unit-tested against the Hermes plugin docs (`MemoryProvider` ABC,
-`pre_gateway_dispatch`, `register`/`register_cli`, config schema). The exact ABC method
-names/shapes, the `pre_gateway_dispatch` payload, and the CLI registration are **to be
-confirmed against a real Hermes install** — the Librarian-facing mapping, privacy gating,
-and fail-soft behaviour are fully covered by the test suite. Targets Python ≥ 3.10.
+Method names/shapes are matched against `agent/memory_provider.py`, `hermes_cli/plugins.py`,
+`gateway/run.py`, and `plugins/memory/__init__.py` in
+[NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent); the
+Librarian-facing mapping, privacy gating, slash commands, and fail-soft behaviour are
+covered by the test suite. Live end-to-end behaviour (a real recall round-trip and that the
+gate fires) is best confirmed on a running Hermes. Targets Python ≥ 3.10.
 
 ## Develop
 
 ```sh
-python -m venv .venv && .venv/bin/pip install -e ".[dev]"
-.venv/bin/ruff check . && .venv/bin/ruff format --check . && .venv/bin/mypy && .venv/bin/pytest
+python -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
+.venv/bin/ruff check . && .venv/bin/ruff format --check . && bash scripts/typecheck.sh && .venv/bin/pytest
 ```
 
 ## License

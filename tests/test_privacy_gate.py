@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
-from the_librarian_hermes_plugin.privacy_gate import make_privacy_gate, message_text
-from the_librarian_hermes_plugin.provider import LibrarianConfig, LibrarianProvider
-from the_librarian_hermes_plugin.state import StateStore
+from librarian.privacy_gate import make_privacy_gate, message_text
+from librarian.provider import LibrarianConfig, LibrarianProvider
+from librarian.state import StateStore
 
 SESSION = "sess-1"
 
@@ -28,25 +29,48 @@ class FakeController:
         return "public"
 
 
+@dataclass
+class FakeEvent:
+    """Stand-in for Hermes' MessageEvent (the gate only reads ``.text``)."""
+
+    text: str
+
+
 def test_gate_routes_signals_to_controller() -> None:
     ctrl = FakeController()
     gate = make_privacy_gate(ctrl)
-    assert gate("off the record, here's a secret") is None
-    gate("you can remember again")
-    gate("/lib-toggle-private")
-    gate("just a normal message")
+    # Hermes calls the hook by keyword with a MessageEvent.
+    assert gate(event=FakeEvent("off the record, here's a secret")) is None
+    gate(event=FakeEvent("you can remember again"))
+    gate(event=FakeEvent("/lib-toggle-private"))
+    gate(event=FakeEvent("just a normal message"))
     assert ctrl.calls == ["enter", "exit", "toggle"]
 
 
-def test_gate_accepts_dict_payloads() -> None:
+def test_gate_matches_hermes_calling_convention() -> None:
+    # invoke_hook dispatches as cb(event=..., gateway=..., session_store=...);
+    # the gate must accept those keywords (and any future ones) without raising.
     ctrl = FakeController()
     gate = make_privacy_gate(ctrl)
-    gate({"content": "this is a private session"})
-    gate({"text": "back on the record"})
+    result = gate(
+        event=FakeEvent("this is a private session"),
+        gateway=object(),
+        session_store=object(),
+    )
+    assert result is None
+    assert ctrl.calls == ["enter"]
+
+
+def test_gate_tolerates_str_and_dict_events() -> None:
+    ctrl = FakeController()
+    gate = make_privacy_gate(ctrl)
+    gate(event="this is a private session")
+    gate(event={"content": "back on the record"})
     assert ctrl.calls == ["enter", "exit"]
 
 
 def test_message_text_extraction() -> None:
+    assert message_text(FakeEvent("hi")) == "hi"
     assert message_text("hi") == "hi"
     assert message_text({"content": "a"}) == "a"
     assert message_text({"prompt": "b"}) == "b"
@@ -90,7 +114,7 @@ def test_enter_private_ends_session_and_sets_state(tmp_path: Path) -> None:
     assert args["session_id"] == "ses_abc"
     assert args["summary"] == "switching to private mode"
     # Local state: private, detached, timestamped.
-    state = StateStore(str(tmp_path), SESSION).load()
+    state = StateStore(str(tmp_path)).load()
     assert state.privacy == "private"
     assert state.librarian_session_id is None
     assert state.entered_private_at is not None
@@ -101,7 +125,7 @@ def test_enter_private_with_no_session_makes_no_call(tmp_path: Path) -> None:
     p = _provider(tmp_path, client)
     p.enter_private()
     assert client.calls == []
-    assert StateStore(str(tmp_path), SESSION).load().privacy == "private"
+    assert StateStore(str(tmp_path)).load().privacy == "private"
 
 
 def test_exit_private_returns_public_and_clears_entered(tmp_path: Path) -> None:
@@ -109,7 +133,7 @@ def test_exit_private_returns_public_and_clears_entered(tmp_path: Path) -> None:
     p = _provider(tmp_path, client)
     p.enter_private()
     p.exit_private()
-    state = StateStore(str(tmp_path), SESSION).load()
+    state = StateStore(str(tmp_path)).load()
     assert state.privacy == "public"
     assert state.entered_private_at is None
 
@@ -118,9 +142,9 @@ def test_toggle_flips_both_directions(tmp_path: Path) -> None:
     client = FakeClient()
     p = _provider(tmp_path, client)
     assert p.toggle_privacy() == "private"
-    assert StateStore(str(tmp_path), SESSION).load().privacy == "private"
+    assert StateStore(str(tmp_path)).load().privacy == "private"
     assert p.toggle_privacy() == "public"
-    assert StateStore(str(tmp_path), SESSION).load().privacy == "public"
+    assert StateStore(str(tmp_path)).load().privacy == "public"
 
 
 def test_gate_drives_real_provider_end_to_end(tmp_path: Path) -> None:
@@ -128,13 +152,13 @@ def test_gate_drives_real_provider_end_to_end(tmp_path: Path) -> None:
     p = _provider(tmp_path, client)
     p.sync_turn("a", "b")  # ses_abc attached
     gate = make_privacy_gate(p)
-    gate("this is a private session")
+    gate(event="this is a private session")
     assert "end_session" in client.names()
     # A subsequent ordinary prompt records nothing while private.
     client.calls.clear()
     p.sync_turn("more", "secret")
     assert client.calls == []
     # Going public again, then a turn starts a fresh session.
-    gate("you can remember again")
+    gate(event="you can remember again")
     p.sync_turn("back", "to work")
     assert "start_session" in client.names()

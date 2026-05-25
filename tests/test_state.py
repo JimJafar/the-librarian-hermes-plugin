@@ -7,12 +7,11 @@ import stat
 from pathlib import Path
 
 import pytest
+from librarian.state import PluginState, StateError, StateStore
 
-from the_librarian_hermes_plugin.state import PluginState, StateError, StateStore
 
-
-def _store(tmp_path: Path, session_id: str = "sess-1") -> StateStore:
-    return StateStore(hermes_home=str(tmp_path), session_id=session_id)
+def _store(tmp_path: Path) -> StateStore:
+    return StateStore(hermes_home=str(tmp_path))
 
 
 def test_absent_state_loads_default_public(tmp_path: Path) -> None:
@@ -86,18 +85,15 @@ def test_update_mutates_and_persists_under_lock(tmp_path: Path) -> None:
     assert store.load().librarian_session_id is None
 
 
-def test_distinct_sessions_get_distinct_files(tmp_path: Path) -> None:
-    a = _store(tmp_path, "sess-a")
-    b = _store(tmp_path, "sess-b")
-    assert a.path != b.path
-
-
-def test_unsafe_session_id_stays_within_home(tmp_path: Path) -> None:
-    store = _store(tmp_path, "../../etc/passwd")
-    store.save(PluginState())
-    # Hashed filename → the path can't escape the hermes_home/librarian-plugin dir.
-    assert tmp_path in store.path.parents
-    assert store.path.suffix == ".json"
+def test_one_state_file_per_profile(tmp_path: Path) -> None:
+    # State is now per-profile (not per Hermes session): two stores under the same
+    # hermes_home share ONE file, so the memory-provider and general-plugin
+    # instances coordinate through it. The path stays inside the profile dir.
+    a = _store(tmp_path)
+    b = _store(tmp_path)
+    assert a.path == b.path
+    assert tmp_path in a.path.parents
+    assert a.path.suffix == ".json"
 
 
 def test_state_serialises_compactly(tmp_path: Path) -> None:

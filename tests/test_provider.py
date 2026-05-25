@@ -5,15 +5,15 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from the_librarian_hermes_plugin.client import LibrarianClientError
-from the_librarian_hermes_plugin.provider import (
+from librarian.client import LibrarianClientError
+from librarian.provider import (
     LibrarianConfig,
     LibrarianProvider,
     _extract_session_id,
     load_config,
     save_config,
 )
-from the_librarian_hermes_plugin.state import PluginState, StateError, StateStore
+from librarian.state import PluginState, StateError, StateStore
 
 SESSION = "sess-1"
 
@@ -44,7 +44,7 @@ def _provider(tmp_path: Path, client: FakeClient, *, config: LibrarianConfig | N
 
 
 def _go_private(tmp_path: Path) -> None:
-    StateStore(str(tmp_path), SESSION).save(PluginState(privacy="private"))
+    StateStore(str(tmp_path)).save(PluginState(privacy="private"))
 
 
 def test_initialize_makes_no_librarian_call(tmp_path: Path) -> None:
@@ -107,7 +107,7 @@ def test_session_end_pauses_and_detaches(tmp_path: Path) -> None:
     p.on_session_end([])
     assert "pause_session" in client.names()
     # Detached locally: the stored session id is cleared.
-    assert StateStore(str(tmp_path), SESSION).load().librarian_session_id is None
+    assert StateStore(str(tmp_path)).load().librarian_session_id is None
 
 
 def test_handle_tool_call_forwards_with_agent_scope(tmp_path: Path) -> None:
