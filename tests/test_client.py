@@ -6,9 +6,8 @@ import json
 import traceback
 
 import pytest
-
-from the_librarian_hermes_plugin import client as client_mod
-from the_librarian_hermes_plugin.client import (
+from librarian import client as client_mod
+from librarian.client import (
     LibrarianClient,
     LibrarianClientError,
     _NoRedirect,

@@ -10,9 +10,15 @@ session on going private). It does NOT block the message — privacy means "no
 Librarian call", not "stop the model", and recording suppression is enforced by
 the provider reading the off-record flag. So the gate returns ``None`` (allow).
 
-The exact ``pre_gateway_dispatch`` payload shape is to be confirmed against a
-real Hermes install; ``message_text`` extracts defensively from a str or the
-common dict keys.
+Hermes invokes the hook as
+``invoke_hook("pre_gateway_dispatch", event=<MessageEvent>, gateway=..., session_store=...)``
+and dispatches each callback as ``cb(**kwargs)`` — i.e. by **keyword**, with
+``event`` a ``MessageEvent`` dataclass carrying ``.text`` (see ``gateway/run.py``
+and ``hermes_cli/plugins.py:invoke_hook``). The callback may return an action
+dict (``{"action": "skip"|"rewrite"|"allow"}``); ``None`` means allow. The gate
+accepts keyword args (and ignores unknown ones via ``**_``) so it can never raise
+on the calling convention. ``message_text`` reads ``event.text`` and still
+tolerates a str / dict so the detector is unit-testable without a MessageEvent.
 """
 
 from __future__ import annotations
@@ -30,7 +36,14 @@ class PrivacyController(Protocol):
 
 
 def message_text(payload: Any) -> str:
-    """Pull the user text from a pre_gateway_dispatch payload (str or dict)."""
+    """Pull the user text from a pre_gateway_dispatch payload.
+
+    Hermes passes a ``MessageEvent`` (has ``.text``); the str / dict branches keep
+    the detector unit-testable and tolerate adapters that pass a raw message.
+    """
+    text = getattr(payload, "text", None)
+    if isinstance(text, str):
+        return text
     if isinstance(payload, str):
         return payload
     if isinstance(payload, dict):
@@ -41,11 +54,16 @@ def message_text(payload: Any) -> str:
     return ""
 
 
-def make_privacy_gate(controller: PrivacyController) -> Callable[[Any], None]:
-    """Build the ``pre_gateway_dispatch`` callback bound to a provider."""
+def make_privacy_gate(controller: PrivacyController) -> Callable[..., None]:
+    """Build the ``pre_gateway_dispatch`` callback bound to a provider.
 
-    def gate(payload: Any) -> None:
-        signal = detect_privacy_signal(message_text(payload)).signal
+    Hermes calls this by keyword (``event=...`` plus ``gateway``/``session_store``);
+    the signature accepts those and swallows any other kwargs so a contract change
+    never turns the gate into a per-turn ``TypeError``.
+    """
+
+    def gate(*, event: Any = None, **_: Any) -> None:
+        signal = detect_privacy_signal(message_text(event)).signal
         if signal == "enter-private":
             controller.enter_private()
         elif signal == "exit-private":

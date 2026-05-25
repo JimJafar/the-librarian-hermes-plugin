@@ -1,0 +1,4 @@
+# Dev tooling only — the plugin itself is dependency-free (stdlib urllib).
+pytest>=8
+ruff>=0.6
+mypy>=1.11

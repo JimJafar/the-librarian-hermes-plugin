@@ -7,7 +7,7 @@ two implementations stay in lockstep.
 
 from __future__ import annotations
 
-from the_librarian_hermes_plugin.privacy import (
+from librarian.privacy import (
     DEFAULT_PRIVATE_MARKERS,
     DEFAULT_PUBLIC_MARKERS,
     detect_privacy_signal,

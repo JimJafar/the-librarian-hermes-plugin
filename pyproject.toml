@@ -1,44 +1,13 @@
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
-
-[project]
-name = "the-librarian-hermes-plugin"
-version = "0.0.1"
-description = "Hermes Agent Memory Provider plugin backed by The Librarian"
-readme = "README.md"
-requires-python = ">=3.10"
-license = "Apache-2.0"
-license-files = ["LICENSE"]
-authors = [{ name = "Jim Sangwine", email = "jim@sangwine.net" }]
-keywords = ["hermes", "hermes-agent", "memory", "the-librarian", "mcp"]
-classifiers = [
-  "Programming Language :: Python :: 3",
-  "License :: OSI Approved :: Apache Software License",
-  "Intended Audience :: Developers",
-]
-# Runtime is dependency-light on purpose (stdlib urllib for HTTP) so the plugin
-# never drags heavy deps into a Hermes install.
-dependencies = []
-
-[project.optional-dependencies]
-dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.11"]
-
-[project.urls]
-Homepage = "https://github.com/JimJafar/the-librarian-hermes-plugin"
-"The Librarian" = "https://github.com/JimJafar/the-librarian"
-
-# Hermes discovers pip-installed plugins via this entry-point group.
-[project.entry-points."hermes_agent.plugins"]
-librarian = "the_librarian_hermes_plugin:register"
-
-[tool.hatch.build.targets.wheel]
-packages = ["src/the_librarian_hermes_plugin"]
+# This repo is a Hermes plugin installed by directory (git clone via
+# `hermes plugins install`), NOT a PyPI wheel — Hermes discovers memory providers
+# by scanning ~/.hermes/plugins/<name>/, never via pip entry points. So there is
+# no [build-system]/[project] here; this file only configures the dev tooling.
+# Dev deps live in requirements-dev.txt; tests load the flat package via
+# tests/conftest.py (the same way Hermes' loader does).
 
 [tool.ruff]
 line-length = 100
 target-version = "py310"
-src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "S"]
@@ -50,8 +19,16 @@ select = ["E", "F", "I", "UP", "B", "S"]
 [tool.mypy]
 python_version = "3.10"
 strict = true
-files = ["src"]
+# The flat modules use package-relative imports (from .client import ...), but the
+# repo dir name is hyphenated and so can't be a Python package name. scripts/
+# typecheck.sh stages the modules into a `librarian/` dir and runs `mypy -p
+# librarian` against it; these settings apply there.
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
+# importlib mode: don't infer packages from __init__.py / manipulate sys.path —
+# the repo root has an __init__.py (it's the plugin package) and prepend mode
+# would try to import it as bare `__init__`. consider_namespace_packages keeps
+# pytest from treating the repo root as a package and importing that __init__.py.
+# tests/conftest.py loads the package as `librarian`.
+addopts = "-q --import-mode=importlib --ignore=__init__.py"

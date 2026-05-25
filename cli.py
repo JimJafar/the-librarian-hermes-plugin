@@ -12,8 +12,10 @@ category, so the Librarian routes it to a proposal for review, which is the righ
 default for user-profile facts). A file is emptied ONLY if every one of its
 entries imported, so a partial failure never loses data.
 
-The exact built-in file layout + the ``register_cli`` wiring shape are to-verify
-against a real Hermes install; ``migrate`` (the testable core) is format-tolerant.
+``register_cli`` wires a ``hermes <name>`` subcommand via
+``ctx.register_cli_command`` (a no-op if the loader's context lacks it, e.g. the
+memory-provider collector); ``migrate`` (the testable core) is format-tolerant of
+the built-in ``MEMORY.md``/``USER.md`` layout.
 """
 
 from __future__ import annotations
