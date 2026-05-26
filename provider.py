@@ -397,7 +397,12 @@ class LibrarianProvider(_Base):
         return [
             {
                 "name": "recall",
-                "description": "Recall durable memories from The Librarian.",
+                "description": (
+                    "Recall durable memories from The Librarian. Each line is "
+                    "prefixed with the memory's id in brackets (e.g. `[mem_...]`) "
+                    "— pass that id to `verify_memory` after using a result so "
+                    "the store learns which recalls were load-bearing."
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {"query": {"type": "string"}},
@@ -419,7 +424,12 @@ class LibrarianProvider(_Base):
             },
             {
                 "name": "verify_memory",
-                "description": "Record whether a recalled memory was useful.",
+                "description": (
+                    "Record a verdict against a memory after recalling it. "
+                    "`useful` raises its recall rank, `not_useful` lowers it, "
+                    "`outdated` archives it. The `memory_id` is the id in "
+                    "brackets from the preceding `recall` line."
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -439,6 +449,11 @@ class LibrarianProvider(_Base):
         if self._is_private():
             return "Off the record — The Librarian is paused; nothing was recalled or stored."
         scoped = self._agent_args(dict(args)) if tool_name != "verify_memory" else dict(args)
+        # Agent-driven recall always asks for ids so the next-turn verify_memory
+        # has something to target. Background prefetch (system-prompt block) does
+        # NOT set this — that's cache-friendly prose, never verified.
+        if tool_name == "recall":
+            scoped.setdefault("include_ids", True)
         try:
             return self._require_client().call_tool(tool_name, scoped)
         except (LibrarianClientError, _Inert) as err:

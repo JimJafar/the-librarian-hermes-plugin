@@ -126,6 +126,33 @@ def test_handle_tool_call_unknown_tool(tmp_path: Path) -> None:
     assert client.calls == []
 
 
+def test_handle_tool_call_recall_asks_for_ids(tmp_path: Path) -> None:
+    # Agent-driven recall ALWAYS asks the Librarian to surface memory ids so the
+    # next-turn verify_memory has something to target. Background prefetch (the
+    # system_prompt_block) deliberately does not — its output is cache-friendly
+    # prose, never verified.
+    client = FakeClient({"recall": "Relevant Memories\n\n- [mem_abc] t: b"})
+    p = _provider(tmp_path, client)
+    p.handle_tool_call("recall", {"query": "auth bug"})
+    _, args = client.calls[0]
+    assert args["include_ids"] is True
+    # Provider-driven prefetch path stays prose-only (no include_ids).
+    client.calls.clear()
+    p.prefetch("auth bug")
+    _, prefetch_args = client.calls[0]
+    assert "include_ids" not in prefetch_args
+
+
+def test_handle_tool_call_recall_respects_caller_include_ids(tmp_path: Path) -> None:
+    # Agents that opt out of ids (rare, but allowed) shouldn't have the wrapper
+    # override their choice — `setdefault` only injects when absent.
+    client = FakeClient({"recall": "ok"})
+    p = _provider(tmp_path, client)
+    p.handle_tool_call("recall", {"query": "q", "include_ids": False})
+    _, args = client.calls[0]
+    assert args["include_ids"] is False
+
+
 def test_on_memory_write_mirrors_add_only(tmp_path: Path) -> None:
     client = FakeClient()
     p = _provider(tmp_path, client)
