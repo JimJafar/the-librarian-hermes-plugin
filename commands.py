@@ -60,7 +60,10 @@ def register_commands(ctx: Any, provider: LibrarianProvider) -> None:
     def resume(raw_args: str = "") -> str:
         ident = (raw_args or "").strip()
         if not ident:
-            listing = provider.run_tool("list_sessions", {"include_ended": True})
+            # Match /lib-session-list's default scope (active + paused) — ended
+            # sessions are resumable, but they shouldn't crowd the picker. To see
+            # ended ones, run /lib-session-list --include-ended and resume by id.
+            listing = provider.run_tool("list_sessions", {"include_ended": False})
             return f"{listing}\n\nResume one with: /lib-session-resume <session_id>"
         text = provider.run_tool("continue_session", {"session_id": ident, "attach": True})
         provider.attach_session_id(ident)
