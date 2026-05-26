@@ -78,7 +78,10 @@ def test_sync_turn_starts_session_then_records(tmp_path: Path) -> None:
     assert client.names() == ["start_session", "record_session_event"]
     _, rec_args = client.calls[1]
     assert rec_args["session_id"] == "ses_abc"
-    assert rec_args["type"] == "turn"
+    # A completed user↔assistant exchange records as a `message` event — the
+    # Librarian's SessionPayloadType doesn't include "turn", and an invalid
+    # type would be silently dropped by the server's Zod validator.
+    assert rec_args["type"] == "message"
 
 
 def test_session_is_started_once_then_reused(tmp_path: Path) -> None:

@@ -321,9 +321,14 @@ class LibrarianProvider(_Base):
         if session is None:
             return
         summary = _turn_summary(user_content, assistant_content)
+        # `type` must be one of the Librarian's SessionPayloadType values
+        # (message/command/file/error/decision/question/checkpoint/handover/note).
+        # "turn" is not in that enum, so the server's Zod validator rejects it
+        # and `_call_soft` silently swallows the error — leaving the session with
+        # zero events. A completed user↔assistant exchange is a `message`.
         self._call_soft(
             "record_session_event",
-            self._agent_args({"session_id": session, "type": "turn", "summary": summary}),
+            self._agent_args({"session_id": session, "type": "message", "summary": summary}),
         )
 
     def on_pre_compress(self, messages: Sequence[object]) -> str:
