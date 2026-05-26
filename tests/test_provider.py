@@ -179,7 +179,9 @@ def test_sync_turn_swallows_client_failure(tmp_path: Path) -> None:
 
 
 def test_unconfigured_provider_is_inert(tmp_path: Path) -> None:
-    p = LibrarianProvider(client=None, config=None)
+    # env={} keeps is_available()'s lazy load from finding a real ~/.hermes on a
+    # dev machine — we want to assert behaviour with NO config anywhere.
+    p = LibrarianProvider(client=None, config=None, env={})
     p.initialize(SESSION, hermes_home=str(tmp_path))
     assert p.is_available() is False
     assert p.prefetch("q") == ""
@@ -223,7 +225,21 @@ def test_load_config_none_when_unconfigured(tmp_path: Path) -> None:
 
 def test_is_available_reflects_config(tmp_path: Path) -> None:
     assert LibrarianProvider(config=LibrarianConfig(endpoint="x", token="t")).is_available() is True
-    assert LibrarianProvider(config=None).is_available() is False
+    # Lazy load points at an empty profile dir → no config.json, no token → not
+    # available. (env={...HERMES_HOME...} keeps the test off any real ~/.hermes.)
+    p = LibrarianProvider(config=None, env={"HERMES_HOME": str(tmp_path)})
+    assert p.is_available() is False
+
+
+def test_is_available_lazy_loads_from_hermes_home(tmp_path: Path) -> None:
+    # The real fix for `hermes memory status` showing "not available": is_available
+    # must resolve config from disk + env without requiring initialize() first.
+    save_config({"endpoint": "https://x/mcp"}, str(tmp_path))
+    p = LibrarianProvider(
+        config=None,
+        env={"HERMES_HOME": str(tmp_path), "LIBRARIAN_AGENT_TOKEN": "t"},
+    )
+    assert p.is_available() is True
 
 
 def test_provider_name(tmp_path: Path) -> None:
