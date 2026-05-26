@@ -29,9 +29,11 @@ your PR, inherits whatever you said — make sure it's true.
 This is The Librarian. Privacy is the product, not a feature. The
 off-record gate stops all automatic recording — never bypass it, never
 "just for debugging." Bearer tokens go in headers, never in URLs or
-logs or error messages. The privacy-marker list is shared across the
-canonical TypeScript source (in `the-librarian`), this repo's Python
-port, and the Codex JS port — change all three or none.
+logs or error messages. The privacy-marker list is shared across all
+five Librarian plugins (Claude Code, Codex, Hermes, OpenCode, Pi) —
+**five peer implementations of the same behaviour, no single canonical
+source any longer.** Any marker-list change must land coordinated
+across all five repos in one go (or none).
 
 ### Fail-soft, never block the user's turn
 
@@ -138,7 +140,9 @@ pytest
 - **The provider must be fail-soft on every Librarian call.** A
   `LibrarianClientError` is logged and swallowed, never raised through
   the Hermes turn (§2: fail-soft).
-- **`privacy.py` mirrors the canonical TS source and the Codex JS
-  port.** All three must stay in sync (§2: privacy beats convenience).
+- **`privacy.py` is one of five peer implementations.** The canonical
+  TS source that all five originally derived from was deleted when the
+  Librarian family went fully standalone — see §2. Coordinate any
+  marker-list change across all five plugin repos.
 - **`requires_env` in `plugin.yaml` drives the install-time prompt.**
   `LIBRARIAN_AGENT_TOKEN` is the only required env var.
