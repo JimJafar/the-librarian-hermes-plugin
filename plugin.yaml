@@ -9,6 +9,17 @@
 name: librarian
 version: 0.0.1
 description: Memory Provider backed by The Librarian — recall/remember, sessions, slash commands, and an off-record privacy gate.
+# kind: standalone is REQUIRED here even though we're a memory provider. Without
+# it, Hermes auto-coerces any user-installed plugin whose __init__.py mentions
+# `register_memory_provider`/`MemoryProvider` to kind: "exclusive"
+# (hermes_cli/plugins.py:1272-1290), and then the general PluginManager skips
+# exclusive plugins entirely — so the pre_gateway_dispatch gate and the
+# /lib-session-* slash commands never register. The auto-coerce protects naive
+# memory-only plugins from a PluginContext that has no register_memory_provider;
+# we sidestep it by declaring kind explicitly. register() in __init__.py guards
+# every registration, so each loader (memory + general) wires what its context
+# supports.
+kind: standalone
 # requires_env drives the install-time secret prompt. The endpoint is collected
 # by `hermes memory setup` (get_config_schema), not here.
 requires_env:
