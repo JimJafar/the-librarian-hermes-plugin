@@ -168,7 +168,14 @@ class LibrarianProvider(_Base):
         return _PROVIDER_NAME
 
     def is_available(self) -> bool:
-        # No network here (per the contract) — just whether config resolves.
+        # Per the ABC, no network — just check whether config resolves. Lazy-load
+        # config (file + env only) on first call so a freshly-constructed instance
+        # reports availability correctly BEFORE Hermes' MemoryManager calls
+        # ``initialize()`` (``hermes memory status`` calls is_available first).
+        if self._config is None:
+            hermes_home = self._resolve_hermes_home()
+            if hermes_home is not None:
+                self._config = load_config(hermes_home, self._env)
         return self._config is not None
 
     def get_config_schema(self) -> list[dict[str, Any]]:
@@ -200,16 +207,28 @@ class LibrarianProvider(_Base):
                 self._config.endpoint, self._config.token, timeout_ms=self._config.timeout_ms
             )
 
+    def _resolve_hermes_home(self) -> str | None:
+        """Best-effort hermes_home from the captured env (no os.environ peek so
+        tests can isolate by passing ``env=``). HERMES_HOME wins; HOME/.hermes is
+        the documented Hermes default; nothing → None (caller skips lazy work)."""
+        home = self._env.get("HERMES_HOME")
+        if home:
+            return home
+        user_home = self._env.get("HOME")
+        return str(Path(user_home) / ".hermes") if user_home else None
+
     def _ensure_runtime(self) -> None:
         """Lazily wire an instance that was never ``initialize()``-d.
 
         The general-plugin loader (privacy gate + slash commands) builds a provider
         via ``register()`` but never calls ``initialize()`` — only the
         ``MemoryManager`` does, on its own instance. Resolve ``HERMES_HOME`` from
-        the environment so the gate/command paths attach to the SAME per-profile
+        the captured env so the gate/command paths attach to the SAME per-profile
         state + config the live memory provider uses (see ``state`` module)."""
-        if self._state is None:
-            hermes_home = self._env.get("HERMES_HOME") or str(Path.home() / ".hermes")
+        if self._state is not None:
+            return
+        hermes_home = self._resolve_hermes_home()
+        if hermes_home is not None:
             self._wire(hermes_home)
 
     def shutdown(self) -> None:
