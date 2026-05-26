@@ -101,12 +101,16 @@ def test_resume_with_id_continues_and_attaches(tmp_path: Path) -> None:
     assert StateStore(str(tmp_path)).load().librarian_session_id == "ses_xyz"
 
 
-def test_resume_bare_lists_sessions(tmp_path: Path) -> None:
+def test_resume_bare_lists_sessions_excluding_ended(tmp_path: Path) -> None:
     client = FakeClient({"list_sessions": "session list"})
     _, cmds = _setup(tmp_path, client)
     out = cmds["lib-session-resume"]("")
     assert "session list" in out
-    assert client.names() == ["list_sessions"]
+    name, args = client.calls[0]
+    assert name == "list_sessions"
+    # Bare resume picker matches /lib-session-list's default scope (active+paused);
+    # ended sessions are resumable but shouldn't crowd the list.
+    assert args["include_ended"] is False
 
 
 def test_checkpoint_without_session_makes_no_call(tmp_path: Path) -> None:
