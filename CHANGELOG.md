@@ -13,6 +13,19 @@ changes from this point forward are catalogued here.
 
 ### Added
 
+- **Conv-state injection on every prefetch + system prompt.** Implements
+  spec §4.9 of the upstream memory-domain-isolation rollout. The
+  provider now calls `conv_state_get` on every `prefetch(query)` and
+  `system_prompt_block()` (using `hermes:<session_id>` as the conv-id
+  per spec §4.8) and prepends the canonical `<conversation-state>`
+  block to the recall text when a row exists. The LLM sees the current
+  `domain` / `session_id` / `off_record` on every turn, which defeats
+  context-compaction-driven state loss. When no row exists or the
+  Librarian fails, the block is omitted and the prefetch text reaches
+  the model unchanged (AGENTS.md §2 fail-soft contract preserved).
+  The privacy gate continues to suppress every Librarian call while
+  off-record — the conv-state block is no exception.
+
 - `AGENTS.md` with the family-wide house rules (privacy, fail-soft,
   cross-repo contracts, CHANGELOG discipline, etc.) and the
   Hermes-plugin-specific build / test / gotcha notes. Sibling
