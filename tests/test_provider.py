@@ -65,10 +65,14 @@ def test_prefetch_recalls_and_injects_agent_scope(tmp_path: Path) -> None:
 
 
 def test_system_prompt_block_uses_start_context(tmp_path: Path) -> None:
+    # FakeClient returns "ok" for unrecognised tools; the conv_state_get call
+    # parses as JSON-decode-error → fail-soft → no block prepended, so the
+    # frozen snapshot still comes through verbatim. The names() set is order-
+    # independent here (the conv-state lookup runs alongside the snapshot read).
     client = FakeClient({"start_context": "frozen snapshot"})
     p = _provider(tmp_path, client)
     assert p.system_prompt_block() == "frozen snapshot"
-    assert client.names() == ["start_context"]
+    assert set(client.names()) == {"start_context", "conv_state_get"}
 
 
 def test_sync_turn_starts_session_then_records(tmp_path: Path) -> None:
@@ -314,3 +318,70 @@ def test_extract_session_id_boundaries() -> None:
     assert _extract_session_id("created ses_abc.def now") == "ses_abc"
     assert _extract_session_id("nothing here") is None
     assert _extract_session_id("preses_abc") is None
+
+
+# ---------------------------------------------------------------------------
+# Conv-state injection — spec §4.9 of memory-domain-isolation.
+# ---------------------------------------------------------------------------
+
+CONV_STATE_PAYLOAD = json.dumps(
+    {
+        "conv_id": "hermes:sess-1",
+        "harness": "hermes",
+        "domain": "coding",
+        "session_id": "ses_attached",
+        "off_record": False,
+        "created_at": "2026-05-27T00:00:00.000Z",
+        "updated_at": "2026-05-27T00:00:00.000Z",
+    }
+)
+
+
+def test_prefetch_prepends_conv_state_block_when_state_exists(tmp_path: Path) -> None:
+    client = FakeClient({"recall": "recalled text", "conv_state_get": CONV_STATE_PAYLOAD})
+    p = _provider(tmp_path, client)
+    out = p.prefetch("auth bug")
+    assert out.startswith("<conversation-state>")
+    assert "  conv_id: hermes:sess-1" in out
+    assert "  domain: coding" in out
+    assert "  session_id: ses_attached" in out
+    assert "  off_record: false" in out
+    assert out.endswith("recalled text")
+    # The recall query is sent with the correct conv_id derivation so the
+    # server-side hard filter (§4.11) can use it once PR 5 wires hook-context.
+    _, conv_args = next(c for c in client.calls if c[0] == "conv_state_get")
+    assert conv_args == {"conv_id": "hermes:sess-1"}
+
+
+def test_prefetch_omits_block_when_no_conv_state_row(tmp_path: Path) -> None:
+    client = FakeClient(
+        {"recall": "recalled text", "conv_state_get": "No conversation state for conv_id hermes:sess-1."}
+    )
+    p = _provider(tmp_path, client)
+    assert p.prefetch("auth bug") == "recalled text"
+
+
+def test_prefetch_fails_soft_when_conv_state_lookup_throws(tmp_path: Path) -> None:
+    client = FakeClient({"recall": "recalled text"}, fail={"conv_state_get"})
+    p = _provider(tmp_path, client)
+    # Network failure on the conv-state side must never block the prefetch —
+    # the recall text still reaches the model.
+    assert p.prefetch("auth bug") == "recalled text"
+
+
+def test_system_prompt_block_prepends_conv_state(tmp_path: Path) -> None:
+    client = FakeClient(
+        {"start_context": "frozen snapshot", "conv_state_get": CONV_STATE_PAYLOAD}
+    )
+    p = _provider(tmp_path, client)
+    out = p.system_prompt_block()
+    assert out.startswith("<conversation-state>")
+    assert out.endswith("frozen snapshot")
+
+
+def test_conv_state_injection_does_not_run_while_private(tmp_path: Path) -> None:
+    client = FakeClient({"recall": "recalled text", "conv_state_get": CONV_STATE_PAYLOAD})
+    _go_private(tmp_path)
+    p = _provider(tmp_path, client)
+    assert p.prefetch("auth bug") == ""
+    assert client.calls == []  # nothing called while off-record

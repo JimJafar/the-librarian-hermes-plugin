@@ -295,19 +295,53 @@ class LibrarianProvider(_Base):
 
     def system_prompt_block(self) -> str:
         """Frozen recall snapshot injected once at session start (cache-friendly,
-        matching the built-in). Empty while private or on any failure."""
+        matching the built-in). The conv-state block is prepended on every call
+        so the LLM sees the current `domain` / `session_id` / `off_record` even
+        when there are no recall hits. Empty while private or on any failure."""
         if self._is_private():
             return ""
-        return self._call_text("start_context", self._agent_args({}))
+        recall_text = self._call_text("start_context", self._agent_args({}))
+        return _prefix_with_conv_state(self._fetch_conv_state(), recall_text)
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
-        """Targeted recall before an API call. Empty while private or on failure.
+        """Targeted recall before an API call. Prepended with the canonical
+        `<conversation-state>` block from spec §4.9 so the LLM sees the current
+        `domain` / `session_id` / `off_record` on every turn — defeating
+        context-compaction-driven state loss. Empty while private or on any
+        failure.
 
         ``session_id`` (the ABC's per-concurrent-session hint) is accepted but not
         used for scoping: this provider keeps one active session per profile."""
         if self._is_private():
             return ""
-        return self._call_text("recall", self._agent_args({"query": query}))
+        recall_text = self._call_text("recall", self._agent_args({"query": query}))
+        return _prefix_with_conv_state(self._fetch_conv_state(), recall_text)
+
+    def _fetch_conv_state(self) -> dict[str, Any] | None:
+        """Look up the conv_state row for this Hermes session, or None.
+
+        conv-id convention: `hermes:<session_id>` where `<session_id>` is the
+        Hermes-side agent session id (set by ``initialize`` / ``on_session_switch``).
+        Spec §4.8 nominates `<channel>:<thread>` for the Slack-bot deployment;
+        the CLI / single-process case uses the session id with the same prefix.
+        Fail-soft: any error returns None, the block is omitted, and the prompt
+        reaches the model unchanged.
+        """
+        if not self._session_id:
+            return None
+        conv_id = f"hermes:{self._session_id}"
+        try:
+            text = self._require_client().call_tool("conv_state_get", {"conv_id": conv_id})
+        except (LibrarianClientError, _Inert) as err:
+            self._log("warn", f"librarian: conv_state_get failed: {err}")
+            return None
+        if not text or text.startswith("No conversation state"):
+            return None
+        try:
+            parsed = json.loads(text)
+        except (TypeError, ValueError):
+            return None
+        return parsed if isinstance(parsed, dict) and "conv_id" in parsed else None
 
     # ---- write (turn persistence) ----
 
@@ -657,6 +691,44 @@ def _turn_summary(user_content: str, assistant_content: str) -> str:
     user = user_content.strip().splitlines()[0][:200] if user_content.strip() else ""
     assistant = assistant_content.strip().splitlines()[0][:200] if assistant_content.strip() else ""
     return f"User: {user}\nAssistant: {assistant}".strip()
+
+
+def _render_conv_state_block(state: dict[str, Any] | None) -> str:
+    """Render the canonical `<conversation-state>` block from spec §4.9.
+
+    Byte-identical across every harness (the spec contract pins the field order
+    and the indent). The empty string return for ``None`` is what lets callers
+    use ``_prefix_with_conv_state`` unconditionally — no state, no injection.
+    """
+    if state is None:
+        return ""
+    conv_id = state.get("conv_id", "")
+    domain = state.get("domain", "")
+    session_id = state.get("session_id") or "none"
+    off_record = "true" if state.get("off_record") else "false"
+    return (
+        "<conversation-state>\n"
+        f"  conv_id: {conv_id}\n"
+        f"  domain: {domain}\n"
+        f"  session_id: {session_id}\n"
+        f"  off_record: {off_record}\n"
+        "</conversation-state>"
+    )
+
+
+def _prefix_with_conv_state(state: dict[str, Any] | None, recall_text: str) -> str:
+    """Concatenate the conv-state block (if any) with the recall text.
+
+    Used by ``prefetch`` / ``system_prompt_block``. A double newline keeps the
+    LLM-side parser happy when both sides are present; the empty-string branch
+    on either side collapses cleanly.
+    """
+    block = _render_conv_state_block(state)
+    if not block:
+        return recall_text
+    if not recall_text:
+        return block
+    return f"{block}\n\n{recall_text}"
 
 
 _SESSION_ID_RE = re.compile(r"\bses_[A-Za-z0-9]+\b")
