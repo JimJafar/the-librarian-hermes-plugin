@@ -37,9 +37,7 @@ class FakeClient:
 
 
 def _provider(client: FakeClient | None = None) -> LibrarianProvider:
-    config = LibrarianConfig(
-        endpoint="https://example/mcp", token="t", agent_id="agent-a"
-    )
+    config = LibrarianConfig(endpoint="https://example/mcp", token="t", agent_id="agent-a")
     p = LibrarianProvider(client=client or FakeClient(), config=config)
     p._session_id = "sess-1"  # the conv-state lookup uses this
     return p
