@@ -10,7 +10,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 STAGE=".mypy-stage"
-MODULES=(__init__.py cli.py client.py commands.py privacy.py privacy_gate.py provider.py state.py py.typed)
+MODULES=(__init__.py cli.py client.py commands.py provider.py py.typed)
 
 rm -rf "$STAGE"
 mkdir -p "$STAGE/librarian"

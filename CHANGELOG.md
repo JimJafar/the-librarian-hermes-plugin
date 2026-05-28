@@ -11,6 +11,44 @@ changes from this point forward are catalogued here.
 
 ## [Unreleased]
 
+### Changed
+
+- **Sessions rethink — breaking change (sessions-rethink PR 5).** The
+  entire session subsystem retires. The Hermes plugin becomes a
+  memory-only provider with four user-facing slash commands.
+  - **Removed slash commands**: `/lib-session-start`, `/lib-session-list`,
+    `/lib-session-resume`, `/lib-session-checkpoint`,
+    `/lib-session-pause`, `/lib-session-end`, `/lib-session-search`,
+    `/lib-toggle-private`.
+  - **Added slash commands**: `/handoff`, `/takeover`, `/learn`,
+    `/toggle-private`. Each surfaces a prompt that drives the LLM
+    through the agent-side flow (Hermes' non-interactive command
+    handlers can't run multi-step pickers directly).
+  - **Removed hooks**: `pre_gateway_dispatch` (the natural-language
+    privacy detector) is no longer registered. Private mode is now an
+    in-conversation `[librarian:private=on|off]` marker the LLM
+    handles via `/toggle-private`.
+  - **Removed source**: `state.py` (per-profile local state file with
+    its session attachment + privacy flag), `privacy.py` (marker
+    detector), `privacy_gate.py` (gateway middleware). Their tests
+    too.
+  - **Provider rewritten**: ~750 → ~370 lines. Kept: config + client
+    setup, recall / remember / verify_memory tool calls, conv-state
+    injection in `prefetch` + `system_prompt_block`,
+    `on_memory_write("add")` mirror. Dropped: every method that
+    started/checkpointed/paused/ended a Librarian session, the
+    privacy flag plumbing, `start_new_session` / `current_session_id`
+    / `attach_session_id` / `detach`. ABC methods (`sync_turn`,
+    `on_pre_compress`, `on_session_end`) become typed no-ops so
+    Hermes' MemoryManager still has the interface it expects.
+  - **Server compatibility**: requires a Librarian server running the
+    sessions-rethink PR 1 build (the `store_handoff` / `list_handoffs`
+    / `claim_handoff` and `conv_state_*` MCP tools must exist).
+  - **Migration**: existing operators should restart Hermes after
+    updating the plugin. The local `<hermes_home>/librarian-plugin/
+    state.json` file the old plugin maintained becomes inert — safe to
+    delete by hand.
+
 ### Added
 
 - **Conv-state injection on every prefetch + system prompt.** Implements

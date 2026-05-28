@@ -5,18 +5,20 @@
 
 A [Hermes Agent](https://hermes-agent.nousresearch.com) **Memory Provider plugin**
 backed by [The Librarian](https://github.com/JimJafar/the-librarian) — durable
-memory, sessions, and an off-record privacy gate, against a Librarian HTTP MCP
-server you point at (local or remote).
+memory and cross-harness handoffs, against a Librarian HTTP MCP server you point
+at (local or remote).
 
 ## Features
 
 - **Memory tools** — `recall` / `remember` / `verify_memory`, auto-scoped to the
   calling agent, with memory ids surfaced so the verify-after-recall loop works.
-- **Session lifecycle** — every turn is recorded, with checkpoints around
-  compaction and pause on session end.
-- **Slash commands** — the full `/lib-session-*` suite plus `/lib-toggle-private`.
-- **Off-record privacy gate** — say "off the record" (or run
-  `/lib-toggle-private`) and recording stops until you go back on.
+- **Four slash commands** — `/handoff`, `/takeover`, `/learn`,
+  `/toggle-private`. Each surfaces the prompt that drives the LLM through the
+  agent-side flow (Hermes handlers are non-interactive, so the LLM owns the
+  multi-step picker).
+- **Per-turn conv-state injection** — `prefetch` and `system_prompt_block`
+  prepend a `<conversation-state>` block so the model sees the current
+  `domain` / `session_id` / `off_record` even after compaction.
 - **Fail-soft** — if the Librarian is unreachable, recall degrades to empty and
   writes are best-effort; a turn is never blocked.
 - **Dependency-light** — stdlib `urllib` for HTTP, no extra runtime deps.
@@ -31,7 +33,7 @@ hermes gateway restart
 ```
 
 The first three steps wire the memory provider, save the endpoint + token, and
-enable the privacy gate + slash commands. Requires Python ≥ 3.10.
+register the four slash commands. Requires Python ≥ 3.10.
 
 ## Configure
 
