@@ -29,7 +29,7 @@ from typing import Any
 # this file clean; at runtime register() always runs inside the package, so the
 # relative imports resolve normally.
 
-__version__ = "0.0.1"
+__version__ = "0.2.0"
 
 __all__ = ["__version__", "register"]
 
@@ -49,13 +49,14 @@ def register(ctx: Any) -> None:
     docstring); calling an absent one would abort the whole ``register``."""
     from .cli import register_cli
     from .commands import register_commands
-    from .privacy_gate import make_privacy_gate
     from .provider import LibrarianProvider
 
     provider = LibrarianProvider(logger=_log)
     if hasattr(ctx, "register_memory_provider"):
         ctx.register_memory_provider(provider)
-    if hasattr(ctx, "register_hook"):
-        ctx.register_hook("pre_gateway_dispatch", make_privacy_gate(provider))
+    # sessions-rethink PR 5 — the pre_gateway_dispatch privacy gate is
+    # retired with the rest of the natural-language private detector.
+    # Private mode is now an in-conversation marker the LLM handles via
+    # /toggle-private; no hook required.
     register_commands(ctx, provider)  # no-op if ctx has no register_command
     register_cli(ctx)  # no-op if ctx has no register_cli_command

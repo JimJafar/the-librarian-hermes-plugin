@@ -7,8 +7,8 @@
 # `hermes plugins install` names the install dir from `name` below, so this lands
 # at ~/.hermes/plugins/librarian/ regardless of the repo name.
 name: librarian
-version: 0.0.1
-description: Memory Provider backed by The Librarian — recall/remember, sessions, slash commands, and an off-record privacy gate.
+version: 0.2.0
+description: Memory Provider backed by The Librarian — recall/remember/verify plus four user-facing verbs (/handoff /takeover /learn /toggle-private) and per-turn conv-state injection.
 # kind: standalone is REQUIRED here even though we're a memory provider. Without
 # it, Hermes auto-coerces any user-installed plugin whose __init__.py mentions
 # `register_memory_provider`/`MemoryProvider` to kind: "exclusive"

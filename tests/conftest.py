@@ -25,7 +25,8 @@ _ROOT = Path(__file__).resolve().parent.parent
 _PKG = "librarian"
 
 # Topological order: leaves first, then modules that import them, then __init__.
-_SIBLINGS = ("client", "state", "privacy", "provider", "privacy_gate", "cli", "commands")
+# sessions-rethink PR 5 — state.py, privacy.py, privacy_gate.py are retired.
+_SIBLINGS = ("client", "provider", "cli", "commands")
 
 
 def _load_package() -> None:

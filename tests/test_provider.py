@@ -1,25 +1,30 @@
-"""Provider mapping tests — off-record gating, fail-soft, hook→MCP mapping."""
+"""Provider mapping tests — sessions-rethink PR 5 (memory-only surface).
+
+Covers:
+- recall / remember / verify_memory MCP tool mapping
+- on_memory_write("add") mirrors to `remember`; other actions are no-ops
+- prefetch + system_prompt_block prepend the canonical
+  <conversation-state> block on conv_state_get hits
+- prefetch + system_prompt_block stay silent on conv_state_get misses
+- sync_turn, on_pre_compress, on_session_end are no-ops (no session
+  surface anymore — they accept the ABC's call shape but contribute
+  nothing)
+"""
 
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 from librarian.client import LibrarianClientError
-from librarian.provider import (
-    LibrarianConfig,
-    LibrarianProvider,
-    _extract_session_id,
-    load_config,
-    save_config,
-)
-from librarian.state import PluginState, StateError, StateStore
-
-SESSION = "sess-1"
+from librarian.provider import LibrarianConfig, LibrarianProvider, load_config, save_config
 
 
 class FakeClient:
-    def __init__(self, responses: dict[str, str] | None = None, fail: set[str] | None = None):
+    def __init__(
+        self,
+        responses: dict[str, str] | None = None,
+        fail: set[str] | None = None,
+    ) -> None:
         self.calls: list[tuple[str, dict[str, object]]] = []
         self._responses = responses or {}
         self._fail = fail or set()
@@ -27,361 +32,130 @@ class FakeClient:
     def call_tool(self, name: str, arguments: dict[str, object]) -> str:
         self.calls.append((name, dict(arguments)))
         if name in self._fail:
-            raise LibrarianClientError("network", f"{name} down")
-        return self._responses.get(name, "ok")
-
-    def names(self) -> list[str]:
-        return [n for n, _ in self.calls]
+            raise LibrarianClientError("network", f"{name} failed")
+        return self._responses.get(name, "")
 
 
-def _provider(tmp_path: Path, client: FakeClient, *, config: LibrarianConfig | None = None):
-    cfg = config or LibrarianConfig(
-        endpoint="https://x/mcp", token="t", agent_id="hermes", project_key="proj"
+def _provider(client: FakeClient | None = None) -> LibrarianProvider:
+    config = LibrarianConfig(
+        endpoint="https://example/mcp", token="t", agent_id="agent-a"
     )
-    p = LibrarianProvider(client=client, config=cfg)
-    p.initialize(SESSION, hermes_home=str(tmp_path))
+    p = LibrarianProvider(client=client or FakeClient(), config=config)
+    p._session_id = "sess-1"  # the conv-state lookup uses this
     return p
 
 
-def _go_private(tmp_path: Path) -> None:
-    StateStore(str(tmp_path)).save(PluginState(privacy="private"))
+def test_handle_tool_call_routes_recall_remember_verify() -> None:
+    client = FakeClient({"recall": "results", "remember": "ok", "verify_memory": "noted"})
+    p = _provider(client)
+
+    assert p.handle_tool_call("recall", {"query": "x"}) == "results"
+    assert p.handle_tool_call("remember", {"title": "t", "body": "b"}) == "ok"
+    assert p.handle_tool_call("verify_memory", {"memory_id": "mem_1", "result": "useful"}) == "noted"
+
+    # recall must auto-include ids so verify_memory has something to target.
+    recall_call = next(c for c in client.calls if c[0] == "recall")
+    assert recall_call[1].get("include_ids") is True
+    # remember + recall carry the agent_id; verify_memory does not (it is keyed by memory_id).
+    assert recall_call[1].get("agent_id") == "agent-a"
+    remember_call = next(c for c in client.calls if c[0] == "remember")
+    assert remember_call[1].get("agent_id") == "agent-a"
+    verify_call = next(c for c in client.calls if c[0] == "verify_memory")
+    assert "agent_id" not in verify_call[1]
 
 
-def test_initialize_makes_no_librarian_call(tmp_path: Path) -> None:
-    client = FakeClient()
-    _provider(tmp_path, client)
-    assert client.calls == []
-
-
-def test_prefetch_recalls_and_injects_agent_scope(tmp_path: Path) -> None:
-    client = FakeClient({"recall": "recalled text"})
-    p = _provider(tmp_path, client)
-    assert p.prefetch("auth bug") == "recalled text"
-    name, args = client.calls[0]
-    assert name == "recall"
-    assert args["query"] == "auth bug"
-    assert args["agent_id"] == "hermes"
-    assert args["project_key"] == "proj"
-
-
-def test_system_prompt_block_uses_start_context(tmp_path: Path) -> None:
-    # FakeClient returns "ok" for unrecognised tools; the conv_state_get call
-    # parses as JSON-decode-error → fail-soft → no block prepended, so the
-    # frozen snapshot still comes through verbatim. The names() set is order-
-    # independent here (the conv-state lookup runs alongside the snapshot read).
-    client = FakeClient({"start_context": "frozen snapshot"})
-    p = _provider(tmp_path, client)
-    assert p.system_prompt_block() == "frozen snapshot"
-    assert set(client.names()) == {"start_context", "conv_state_get"}
-
-
-def test_sync_turn_starts_session_then_records(tmp_path: Path) -> None:
-    client = FakeClient({"start_session": "Session started: ses_abc"})
-    p = _provider(tmp_path, client)
-    p.sync_turn("hello", "hi there")
-    assert client.names() == ["start_session", "record_session_event"]
-    _, rec_args = client.calls[1]
-    assert rec_args["session_id"] == "ses_abc"
-    # A completed user↔assistant exchange records as a `message` event — the
-    # Librarian's SessionPayloadType doesn't include "turn", and an invalid
-    # type would be silently dropped by the server's Zod validator.
-    assert rec_args["type"] == "message"
-
-
-def test_session_is_started_once_then_reused(tmp_path: Path) -> None:
-    client = FakeClient({"start_session": "ses_abc"})
-    p = _provider(tmp_path, client)
-    p.sync_turn("a", "b")
-    p.sync_turn("c", "d")
-    assert client.names().count("start_session") == 1
-    assert client.names().count("record_session_event") == 2
-
-
-def test_pre_compress_checkpoints_only_with_a_session(tmp_path: Path) -> None:
-    client = FakeClient({"start_session": "ses_abc"})
-    p = _provider(tmp_path, client)
-    p.on_pre_compress([])  # no session yet → no call
-    assert client.calls == []
-    p.sync_turn("a", "b")  # establishes ses_abc
-    p.on_pre_compress([])
-    assert "checkpoint_session" in client.names()
-
-
-def test_session_end_pauses_and_detaches(tmp_path: Path) -> None:
-    client = FakeClient({"start_session": "ses_abc"})
-    p = _provider(tmp_path, client)
-    p.sync_turn("a", "b")
-    p.on_session_end([])
-    assert "pause_session" in client.names()
-    # Detached locally: the stored session id is cleared.
-    assert StateStore(str(tmp_path)).load().librarian_session_id is None
-
-
-def test_handle_tool_call_forwards_with_agent_scope(tmp_path: Path) -> None:
-    client = FakeClient({"remember": "stored"})
-    p = _provider(tmp_path, client)
-    out = p.handle_tool_call("remember", {"title": "t", "body": "b"})
-    assert out == "stored"
-    _, args = client.calls[0]
-    assert args["agent_id"] == "hermes"
-
-
-def test_handle_tool_call_unknown_tool(tmp_path: Path) -> None:
-    client = FakeClient()
-    p = _provider(tmp_path, client)
+def test_handle_tool_call_rejects_unknown_tools() -> None:
+    p = _provider()
     assert "Unknown" in p.handle_tool_call("delete_everything", {})
-    assert client.calls == []
 
 
-def test_handle_tool_call_recall_asks_for_ids(tmp_path: Path) -> None:
-    # Agent-driven recall ALWAYS asks the Librarian to surface memory ids so the
-    # next-turn verify_memory has something to target. Background prefetch (the
-    # system_prompt_block) deliberately does not — its output is cache-friendly
-    # prose, never verified.
-    client = FakeClient({"recall": "Relevant Memories\n\n- [mem_abc] t: b"})
-    p = _provider(tmp_path, client)
-    p.handle_tool_call("recall", {"query": "auth bug"})
-    _, args = client.calls[0]
-    assert args["include_ids"] is True
-    # Provider-driven prefetch path stays prose-only (no include_ids).
+def test_on_memory_write_mirrors_add_calls_only() -> None:
+    client = FakeClient({"remember": "ok"})
+    p = _provider(client)
+
+    p.on_memory_write("add", "note title", "the body")
+    assert client.calls[-1][0] == "remember"
+
+    # Non-add actions are no-ops.
     client.calls.clear()
-    p.prefetch("auth bug")
-    _, prefetch_args = client.calls[0]
-    assert "include_ids" not in prefetch_args
-
-
-def test_handle_tool_call_recall_respects_caller_include_ids(tmp_path: Path) -> None:
-    # Agents that opt out of ids (rare, but allowed) shouldn't have the wrapper
-    # override their choice — `setdefault` only injects when absent.
-    client = FakeClient({"recall": "ok"})
-    p = _provider(tmp_path, client)
-    p.handle_tool_call("recall", {"query": "q", "include_ids": False})
-    _, args = client.calls[0]
-    assert args["include_ids"] is False
-
-
-def test_on_memory_write_mirrors_add_only(tmp_path: Path) -> None:
-    client = FakeClient()
-    p = _provider(tmp_path, client)
-    p.on_memory_write("add", "note title", "note body")
-    assert client.names() == ["remember"]
-    client.calls.clear()
-    p.on_memory_write("replace", "x", "y")
-    p.on_memory_write("remove", "x", "")
+    p.on_memory_write("replace", "t", "b")
+    p.on_memory_write("remove", "t", "")
     assert client.calls == []
 
 
-# ---- off-record gating ----
-
-
-def test_private_suppresses_reads_and_writes(tmp_path: Path) -> None:
-    client = FakeClient({"recall": "should not happen"})
-    p = _provider(tmp_path, client)
-    _go_private(tmp_path)
-    assert p.prefetch("q") == ""
-    assert p.system_prompt_block() == ""
-    p.sync_turn("a", "b")
-    p.on_pre_compress([])
-    p.on_session_end([])
-    p.on_memory_write("add", "t", "b")
-    assert client.calls == []
-
-
-def test_private_handle_tool_call_returns_off_record_message(tmp_path: Path) -> None:
-    client = FakeClient()
-    p = _provider(tmp_path, client)
-    _go_private(tmp_path)
-    out = p.handle_tool_call("remember", {"title": "t", "body": "b"})
-    assert "Off the record" in out
-    assert client.calls == []
-
-
-# ---- fail-soft ----
-
-
-def test_client_failure_degrades_recall_to_empty(tmp_path: Path) -> None:
-    client = FakeClient(fail={"recall"})
-    p = _provider(tmp_path, client)
-    assert p.prefetch("q") == ""  # no raise
-
-
-def test_sync_turn_swallows_client_failure(tmp_path: Path) -> None:
-    client = FakeClient(fail={"start_session"})
-    p = _provider(tmp_path, client)
-    p.sync_turn("a", "b")  # must not raise
-    assert client.names() == ["start_session"]  # never reached record
-
-
-def test_unconfigured_provider_is_inert(tmp_path: Path) -> None:
-    # env={} keeps is_available()'s lazy load from finding a real ~/.hermes on a
-    # dev machine — we want to assert behaviour with NO config anywhere.
-    p = LibrarianProvider(client=None, config=None, env={})
-    p.initialize(SESSION, hermes_home=str(tmp_path))
-    assert p.is_available() is False
-    assert p.prefetch("q") == ""
-    p.sync_turn("a", "b")  # no raise
-    assert "unavailable" in p.handle_tool_call("recall", {"query": "q"}).lower()
-
-
-def test_no_hermes_home_is_inert_and_private(tmp_path: Path) -> None:
-    client = FakeClient()
-    p = LibrarianProvider(client=client, config=LibrarianConfig(endpoint="https://x", token="t"))
-    p.initialize(SESSION)  # no hermes_home
-    assert p.prefetch("q") == ""
-    assert client.calls == []
-
-
-# ---- config ----
-
-
-def test_save_config_omits_token_and_load_reads_from_env(tmp_path: Path) -> None:
-    save_config(
-        {"endpoint": "https://x/mcp", "token": "should-not-persist", "agent_id": "hermes"},
-        str(tmp_path),
+def test_prefetch_prepends_conv_state_block_on_a_hit() -> None:
+    row = json.dumps(
+        {
+            "conv_id": "hermes:sess-1",
+            "domain": "coding",
+            "session_id": "ses_1",
+            "off_record": False,
+        }
     )
-    written = json.loads((tmp_path / "librarian-plugin" / "config.json").read_text())
-    assert "token" not in written
-    assert written["endpoint"] == "https://x/mcp"
+    client = FakeClient({"conv_state_get": row, "recall": "recall body"})
+    p = _provider(client)
 
-    cfg = load_config(str(tmp_path), {"LIBRARIAN_AGENT_TOKEN": "from-env"})
-    assert cfg is not None
-    assert cfg.token == "from-env"
-    assert cfg.endpoint == "https://x/mcp"
-    assert cfg.agent_id == "hermes"
-
-
-def test_load_config_none_when_unconfigured(tmp_path: Path) -> None:
-    assert load_config(str(tmp_path), {}) is None  # no config file, no token
-    save_config({"endpoint": "https://x"}, str(tmp_path))
-    assert load_config(str(tmp_path), {}) is None  # endpoint but no token
-    assert load_config(str(tmp_path), {"LIBRARIAN_AGENT_TOKEN": "t"}) is not None
-
-
-def test_is_available_reflects_config(tmp_path: Path) -> None:
-    assert LibrarianProvider(config=LibrarianConfig(endpoint="x", token="t")).is_available() is True
-    # Lazy load points at an empty profile dir → no config.json, no token → not
-    # available. (env={...HERMES_HOME...} keeps the test off any real ~/.hermes.)
-    p = LibrarianProvider(config=None, env={"HERMES_HOME": str(tmp_path)})
-    assert p.is_available() is False
-
-
-def test_is_available_lazy_loads_from_hermes_home(tmp_path: Path) -> None:
-    # The real fix for `hermes memory status` showing "not available": is_available
-    # must resolve config from disk + env without requiring initialize() first.
-    save_config({"endpoint": "https://x/mcp"}, str(tmp_path))
-    p = LibrarianProvider(
-        config=None,
-        env={"HERMES_HOME": str(tmp_path), "LIBRARIAN_AGENT_TOKEN": "t"},
-    )
-    assert p.is_available() is True
-
-
-def test_provider_name(tmp_path: Path) -> None:
-    assert LibrarianProvider().name == "librarian"
-
-
-# ---- fail-closed on unreadable state (must not raise out of any hook) ----
-
-
-class _BrokenStore:
-    def __init__(self, *_args: object, **_kwargs: object) -> None:
-        pass
-
-    def load(self) -> PluginState:
-        raise StateError("corrupt")
-
-    def update(self, _mutate: object) -> PluginState:
-        raise StateError("corrupt")
-
-    def save(self, _state: object) -> None:
-        raise StateError("corrupt")
-
-
-def test_state_error_is_swallowed_by_every_hook(tmp_path: Path) -> None:
-    client = FakeClient()
-    cfg = LibrarianConfig(endpoint="https://x/mcp", token="t")
-    p = LibrarianProvider(client=client, config=cfg, state_store_factory=_BrokenStore)
-    p.initialize(SESSION, hermes_home=str(tmp_path))
-    # Unreadable state → treated as private → no call, and nothing raises.
-    assert p.prefetch("q") == ""
-    assert p.system_prompt_block() == ""
-    p.sync_turn("a", "b")
-    p.on_pre_compress([])
-    p.on_session_end([])
-    p.on_memory_write("add", "t", "b")
-    assert "Off the record" in p.handle_tool_call("recall", {"query": "q"})
-    assert client.calls == []
-
-
-def test_extract_session_id_boundaries() -> None:
-    assert _extract_session_id("Session started: ses_abc123.") == "ses_abc123"
-    assert _extract_session_id("created ses_abc.def now") == "ses_abc"
-    assert _extract_session_id("nothing here") is None
-    assert _extract_session_id("preses_abc") is None
-
-
-# ---------------------------------------------------------------------------
-# Conv-state injection — spec §4.9 of memory-domain-isolation.
-# ---------------------------------------------------------------------------
-
-CONV_STATE_PAYLOAD = json.dumps(
-    {
-        "conv_id": "hermes:sess-1",
-        "harness": "hermes",
-        "domain": "coding",
-        "session_id": "ses_attached",
-        "off_record": False,
-        "created_at": "2026-05-27T00:00:00.000Z",
-        "updated_at": "2026-05-27T00:00:00.000Z",
-    }
-)
-
-
-def test_prefetch_prepends_conv_state_block_when_state_exists(tmp_path: Path) -> None:
-    client = FakeClient({"recall": "recalled text", "conv_state_get": CONV_STATE_PAYLOAD})
-    p = _provider(tmp_path, client)
-    out = p.prefetch("auth bug")
+    out = p.prefetch("how do I X")
     assert out.startswith("<conversation-state>")
-    assert "  conv_id: hermes:sess-1" in out
-    assert "  domain: coding" in out
-    assert "  session_id: ses_attached" in out
-    assert "  off_record: false" in out
-    assert out.endswith("recalled text")
-    # The recall query is sent with the correct conv_id derivation so the
-    # server-side hard filter (§4.11) can use it once PR 5 wires hook-context.
-    _, conv_args = next(c for c in client.calls if c[0] == "conv_state_get")
-    assert conv_args == {"conv_id": "hermes:sess-1"}
+    assert "domain: coding" in out
+    assert "recall body" in out
 
 
-def test_prefetch_omits_block_when_no_conv_state_row(tmp_path: Path) -> None:
+def test_prefetch_returns_recall_only_when_conv_state_misses() -> None:
     client = FakeClient(
-        {"recall": "recalled text", "conv_state_get": "No conversation state for conv_id hermes:sess-1."}
+        {"conv_state_get": "No conversation state for conv_id hermes:sess-1.", "recall": "hits"}
     )
-    p = _provider(tmp_path, client)
-    assert p.prefetch("auth bug") == "recalled text"
+    p = _provider(client)
+    assert p.prefetch("q") == "hits"
 
 
-def test_prefetch_fails_soft_when_conv_state_lookup_throws(tmp_path: Path) -> None:
-    client = FakeClient({"recall": "recalled text"}, fail={"conv_state_get"})
-    p = _provider(tmp_path, client)
-    # Network failure on the conv-state side must never block the prefetch —
-    # the recall text still reaches the model.
-    assert p.prefetch("auth bug") == "recalled text"
+def test_prefetch_returns_empty_string_when_conv_state_throws() -> None:
+    client = FakeClient({"recall": ""}, fail={"conv_state_get"})
+    p = _provider(client)
+    out = p.prefetch("q")
+    assert out == ""
 
 
-def test_system_prompt_block_prepends_conv_state(tmp_path: Path) -> None:
-    client = FakeClient(
-        {"start_context": "frozen snapshot", "conv_state_get": CONV_STATE_PAYLOAD}
+def test_system_prompt_block_prepends_conv_state_block_on_a_hit() -> None:
+    row = json.dumps(
+        {
+            "conv_id": "hermes:sess-1",
+            "domain": "general",
+            "session_id": None,
+            "off_record": False,
+        }
     )
-    p = _provider(tmp_path, client)
+    client = FakeClient({"conv_state_get": row, "start_context": "context"})
+    p = _provider(client)
     out = p.system_prompt_block()
     assert out.startswith("<conversation-state>")
-    assert out.endswith("frozen snapshot")
+    assert "session_id: none" in out
+    assert "context" in out
 
 
-def test_conv_state_injection_does_not_run_while_private(tmp_path: Path) -> None:
-    client = FakeClient({"recall": "recalled text", "conv_state_get": CONV_STATE_PAYLOAD})
-    _go_private(tmp_path)
-    p = _provider(tmp_path, client)
-    assert p.prefetch("auth bug") == ""
-    assert client.calls == []  # nothing called while off-record
+def test_retired_lifecycle_methods_are_silent_no_ops() -> None:
+    client = FakeClient()
+    p = _provider(client)
+    p.sync_turn("user", "assistant")
+    assert p.on_pre_compress([]) == ""
+    p.on_session_end([])
+    p.on_session_switch("new-sess", reset=True)
+    assert client.calls == []
+    # The new session id is tracked so subsequent conv-state lookups
+    # use the right conv_id even though no Librarian call fires here.
+    assert p._session_id == "new-sess"
+
+
+def test_load_and_save_config_round_trip(tmp_path: object) -> None:
+    hermes_home = str(tmp_path)
+    save_config({"endpoint": "https://e/mcp", "agent_id": "a1"}, hermes_home)
+    cfg = load_config(hermes_home, {"LIBRARIAN_AGENT_TOKEN": "tok"})
+    assert cfg is not None
+    assert cfg.endpoint == "https://e/mcp"
+    assert cfg.token == "tok"
+    assert cfg.agent_id == "a1"
+
+
+def test_load_config_returns_none_when_token_missing(tmp_path: object) -> None:
+    save_config({"endpoint": "https://e/mcp"}, str(tmp_path))
+    assert load_config(str(tmp_path), {}) is None

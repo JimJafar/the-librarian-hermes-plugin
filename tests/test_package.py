@@ -64,19 +64,13 @@ def test_memory_loader_gets_the_provider() -> None:
     assert isinstance(ctx.providers[0], LibrarianProvider)
 
 
-def test_general_loader_gets_gate_and_commands() -> None:
+def test_general_loader_gets_the_four_commands_and_no_privacy_hook() -> None:
     ctx = GeneralLoaderCtx()
     plugin.register(ctx)  # must not raise despite no register_memory_provider
-    assert "pre_gateway_dispatch" in ctx.hooks
-    assert callable(ctx.hooks["pre_gateway_dispatch"])
-    assert "lib-toggle-private" in ctx.commands
-    assert "lib-session-start" in ctx.commands
-    assert len(ctx.commands) == 8
-
-
-def test_gate_returns_allow_and_does_not_raise() -> None:
-    ctx = GeneralLoaderCtx()
-    plugin.register(ctx)
-    # The gate drives privacy on its bound provider; assert it runs and returns
-    # allow (None) on an ordinary message (no marker → no transition).
-    assert ctx.hooks["pre_gateway_dispatch"](event="just a normal message") is None
+    # sessions-rethink PR 5 — the pre_gateway_dispatch privacy gate is
+    # retired with the natural-language detector. Only the four
+    # user-facing slash commands are registered now.
+    assert ctx.hooks == {}
+    for verb in ("handoff", "takeover", "learn", "toggle-private"):
+        assert verb in ctx.commands
+    assert len(ctx.commands) == 4
