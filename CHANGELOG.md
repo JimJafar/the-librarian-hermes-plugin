@@ -11,6 +11,18 @@ changes from this point forward are catalogued here.
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-05-28
+
+### Added
+
+- **Release runbook + per-repo release doc.** A new
+  [`docs/release.md`](docs/release.md) captures the per-repo release
+  steps (no embedded version file — release is purely a git tag +
+  GitHub release for traceability, since Hermes installs by
+  directory clone). AGENTS.md is thinned and points at it; the
+  cross-family runbook lives in the monorepo at
+  [`the-librarian/docs/release-runbook.md`](https://github.com/JimJafar/the-librarian/blob/main/docs/release-runbook.md).
+
 ### Changed
 
 - **Sessions rethink — breaking change (sessions-rethink PR 5).** The
