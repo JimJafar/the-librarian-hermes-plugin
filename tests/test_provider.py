@@ -51,7 +51,8 @@ def test_handle_tool_call_routes_recall_remember_verify() -> None:
 
     assert p.handle_tool_call("recall", {"query": "x"}) == "results"
     assert p.handle_tool_call("remember", {"title": "t", "body": "b"}) == "ok"
-    assert p.handle_tool_call("verify_memory", {"memory_id": "mem_1", "result": "useful"}) == "noted"
+    verify_args = {"memory_id": "mem_1", "result": "useful"}
+    assert p.handle_tool_call("verify_memory", verify_args) == "noted"
 
     # recall must auto-include ids so verify_memory has something to target.
     recall_call = next(c for c in client.calls if c[0] == "recall")
