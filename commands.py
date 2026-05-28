@@ -58,9 +58,7 @@ _TOGGLE_ON = (
     "state until explicitly toggled off."
 )
 
-_TOGGLE_OFF = (
-    "Private mode is OFF. `[librarian:private=off]` — normal operation resumed."
-)
+_TOGGLE_OFF = "Private mode is OFF. `[librarian:private=off]` — normal operation resumed."
 
 
 def register_commands(ctx: Any, provider: LibrarianProvider) -> None:

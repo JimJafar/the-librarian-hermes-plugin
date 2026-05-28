@@ -250,9 +250,7 @@ class LibrarianProvider(_Base):
 
     # ---- write (turn persistence — now no-ops; sessions are retired) ----
 
-    def sync_turn(
-        self, user_content: str, assistant_content: str, *, session_id: str = ""
-    ) -> None:
+    def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
         del user_content, assistant_content, session_id  # no-op post-rethink
 
     def on_pre_compress(self, messages: Sequence[object]) -> str:
@@ -347,19 +345,13 @@ class LibrarianProvider(_Base):
             },
         ]
 
-    def handle_tool_call(
-        self, tool_name: str, args: dict[str, Any], **kwargs: Any
-    ) -> str:
+    def handle_tool_call(self, tool_name: str, args: dict[str, Any], **kwargs: Any) -> str:
         del kwargs
         if tool_name not in {"recall", "remember", "verify_memory"}:
             return f"Unknown Librarian tool: {tool_name}"
         if not isinstance(args, dict):
             return f"The Librarian tool {tool_name} expects an object of arguments."
-        scoped = (
-            self._agent_args(dict(args))
-            if tool_name != "verify_memory"
-            else dict(args)
-        )
+        scoped = self._agent_args(dict(args)) if tool_name != "verify_memory" else dict(args)
         # Agent-driven recall always asks for ids so the next-turn
         # verify_memory has something to target.
         if tool_name == "recall":
