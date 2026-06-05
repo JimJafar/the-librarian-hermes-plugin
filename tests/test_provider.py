@@ -4,7 +4,7 @@ Covers:
 - recall / remember / verify_memory MCP tool mapping
 - on_memory_write("add") mirrors to `remember`; other actions are no-ops
 - prefetch + system_prompt_block prepend the canonical
-  <conversation-state> block on conv_state_get hits
+  <conversation-state> block (conv_id + off_record only) on conv_state_get hits
 - prefetch + system_prompt_block stay silent on conv_state_get misses
 - sync_turn, on_pre_compress, on_session_end are no-ops (no session
   surface anymore — they accept the ABC's call shape but contribute
@@ -86,8 +86,6 @@ def test_prefetch_prepends_conv_state_block_on_a_hit() -> None:
     row = json.dumps(
         {
             "conv_id": "hermes:sess-1",
-            "domain": "coding",
-            "session_id": "ses_1",
             "off_record": False,
         }
     )
@@ -96,7 +94,11 @@ def test_prefetch_prepends_conv_state_block_on_a_hit() -> None:
 
     out = p.prefetch("how do I X")
     assert out.startswith("<conversation-state>")
-    assert "domain: coding" in out
+    assert "conv_id: hermes:sess-1" in out
+    assert "off_record: false" in out
+    # The retired domain / session_id lines must not appear in the trimmed block.
+    assert "domain" not in out
+    assert "session_id" not in out
     assert "recall body" in out
 
 
@@ -119,16 +121,18 @@ def test_system_prompt_block_prepends_conv_state_block_on_a_hit() -> None:
     row = json.dumps(
         {
             "conv_id": "hermes:sess-1",
-            "domain": "general",
-            "session_id": None,
-            "off_record": False,
+            "off_record": True,
         }
     )
     client = FakeClient({"conv_state_get": row, "start_context": "context"})
     p = _provider(client)
     out = p.system_prompt_block()
     assert out.startswith("<conversation-state>")
-    assert "session_id: none" in out
+    assert "conv_id: hermes:sess-1" in out
+    assert "off_record: true" in out
+    # The retired domain / session_id lines must not appear in the trimmed block.
+    assert "domain" not in out
+    assert "session_id" not in out
     assert "context" in out
 
 

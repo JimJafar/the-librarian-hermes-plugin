@@ -2,7 +2,7 @@
 
 You're an AI agent working on this repo. It's part of
 [The Librarian](https://github.com/JimJafar/the-librarian) — a portable
-memory + session layer for AI agents, open source, designed for
+memory + handoff layer for AI agents, open source, designed for
 production use by people we'll never meet. Read this before your first
 commit. Follow it on every change.
 
@@ -11,9 +11,10 @@ commit. Follow it on every change.
 A [Hermes](https://github.com/NousResearch/hermes-agent) memory-
 provider plugin for The Librarian. Python, installs via
 `hermes plugins install`, registers as both a Memory Provider
-(prefetch / sync_turn / on_pre_compress / handle_tool_call) and a
-general plugin (`/lib-session-*` slash commands + the
-`pre_gateway_dispatch` privacy gate).
+(prefetch / sync_turn / on_pre_compress / handle_tool_call, plus
+per-turn conv-state injection) and a general plugin (the four
+user-facing slash commands: `/handoff`, `/takeover`, `/learn`,
+`/toggle-private`).
 
 ## 2. House rules
 
@@ -49,16 +50,16 @@ Three things stay consistent across the family. Don't change any of
 them in one repo without changing all of them in the same coordinated
 push, and never invent new ones unilaterally:
 
-- **`/lib:session` verbs:** `start`, `list`, `resume`, `checkpoint`,
-  `pause`, `end`, `search`, plus `/lib-toggle-private`. Canonical
+- **User-facing slash commands:** `/handoff`, `/takeover`, `/learn`,
+  `/toggle-private` (the seven `/lib-session-*` verbs and
+  `/lib-toggle-private` are retired — sessions-rethink PR 5). Canonical
   contract: [`the-librarian/docs/slash-commands.md`](https://github.com/JimJafar/the-librarian/blob/main/docs/slash-commands.md).
-- **Three-state models:** sessions are `active | paused | ended`;
-  memories are `active | proposed | archived`. The retired verbs
-  (`archive`, `restore`, `delete`, `status`, `confirm_memory`,
-  `reject_memory`) are gone for good.
+- **Memory state model:** memories are `active | proposed | archived`.
+  The retired memory verbs (`confirm_memory`, `reject_memory`) are gone
+  for good; proposals are confirmed/archived via `verify_memory`.
 - **`source_ref` shape:** `<harness>:<run-id>:cwd:<abs>` when the run
   id is available, else `cwd:<abs>`. This is the cross-harness primary
-  key for sessions.
+  key for handoffs.
 
 ### Respect your consumers
 

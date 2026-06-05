@@ -11,6 +11,20 @@ changes from this point forward are catalogued here.
 
 ## [Unreleased]
 
+### Changed
+
+- **Conv-state block trimmed to `conv_id` + `off_record` (lockstep).** The
+  injected `<conversation-state>` block drops the retired `domain` and
+  `session_id` lines, leaving only `conv_id` and `off_record`. This is a
+  lockstep change with the Librarian server's conv-state shape. The conv-id
+  lookup key (`hermes:<session_id>`) is unchanged.
+- **Doc residue cleanup.** `AGENTS.md` and `README.md` drop the retired
+  `/lib-session-*` slash-command tables/contract and the stale conv-state
+  `domain` field; the cross-repo contract now lists the four handoff verbs
+  (`/handoff`, `/takeover`, `/learn`, `/toggle-private`) and the
+  `active | proposed | archived` memory state model. `commands.py` docstring
+  reworded to reflect the retired session verbs.
+
 ## [0.2.0] — 2026-05-28
 
 ### Added

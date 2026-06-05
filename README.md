@@ -18,7 +18,7 @@ at (local or remote).
   multi-step picker).
 - **Per-turn conv-state injection** — `prefetch` and `system_prompt_block`
   prepend a `<conversation-state>` block so the model sees the current
-  `domain` / `session_id` / `off_record` even after compaction.
+  `conv_id` / `off_record` even after compaction.
 - **Fail-soft** — if the Librarian is unreachable, recall degrades to empty and
   writes are best-effort; a turn is never blocked.
 - **Dependency-light** — stdlib `urllib` for HTTP, no extra runtime deps.
@@ -62,14 +62,10 @@ Then enter `endpoint` and `token` to match in `hermes memory setup`.
 
 | Command | Effect |
 | --- | --- |
-| `/lib-session-start [title] [--private]` | Start a new session (or go off-record with `--private`) |
-| `/lib-session-list [--include-ended]` | List resumable sessions |
-| `/lib-session-resume [<session_id>]` | Resume a session (bare call shows the picker) |
-| `/lib-session-checkpoint [summary]` | Checkpoint the attached session |
-| `/lib-session-pause` | Pause and detach |
-| `/lib-session-end [summary]` | End and detach |
-| `/lib-session-search <query>` | Search session content |
-| `/lib-toggle-private` | Toggle off-record (private) mode |
+| `/handoff` | Author a five-section handoff document and persist it for cross-harness pickup |
+| `/takeover` | List candidate handoffs, claim one, and inject it into the conversation |
+| `/learn` | Extract durable lessons from this conversation into memory proposals |
+| `/toggle-private` | Toggle in-conversation private mode (no server state, no hook) |
 
 ## Migrate built-in memory
 

@@ -212,14 +212,14 @@ class LibrarianProvider(_Base):
     def system_prompt_block(self) -> str:
         """Frozen recall snapshot injected once at session start (cache-friendly,
         matching the built-in). The conv-state block is prepended on every call
-        so the LLM sees the current `domain` / `session_id` / `off_record`."""
+        so the LLM sees the current `conv_id` / `off_record`."""
         recall_text = self._call_text("start_context", self._agent_args({}))
         return _prefix_with_conv_state(self._fetch_conv_state(), recall_text)
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         """Targeted recall before an API call. Prepended with the canonical
         `<conversation-state>` block from spec §4.9 so the LLM sees the current
-        `domain` / `session_id` / `off_record` on every turn — defeating
+        `conv_id` / `off_record` on every turn — defeating
         context-compaction-driven state loss."""
         del session_id  # the ABC's hint; one Librarian endpoint per profile
         recall_text = self._call_text("recall", self._agent_args({"query": query}))
@@ -391,15 +391,11 @@ class LibrarianProvider(_Base):
 def _render_conv_state_block(state: dict[str, Any] | None) -> str:
     if not state or "conv_id" not in state:
         return ""
-    domain = state.get("domain") or "unknown"
-    session_id = state.get("session_id") or "none"
     off_record = "true" if state.get("off_record") else "false"
     return "\n".join(
         [
             "<conversation-state>",
             f"  conv_id: {state['conv_id']}",
-            f"  domain: {domain}",
-            f"  session_id: {session_id}",
             f"  off_record: {off_record}",
             "</conversation-state>",
         ]
