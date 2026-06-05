@@ -6,8 +6,9 @@ has the signature ``fn(raw_args: str) -> str | None``. They are only wired when
 the plugin is loaded as a *general* plugin (``hermes plugins enable librarian``);
 ``hermes memory setup`` alone wires the provider but not these commands.
 
-sessions-rethink PR 5 — the seven ``/lib-session-*`` verbs and
-``/lib-toggle-private`` are retired and replaced by four user-facing verbs:
+sessions-rethink PR 5 — the retired session verbs (the seven
+``/lib-session-*`` commands plus ``/lib-toggle-private``) are gone; the
+four user-facing handoff verbs below replace them:
 
 - ``/handoff`` — author a five-section narrative and persist via
   ``store_handoff`` for cross-harness pickup.
