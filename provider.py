@@ -217,20 +217,32 @@ class LibrarianProvider(_Base):
         return _prefix_with_conv_state(self._fetch_conv_state(), recall_text)
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
-        """Targeted recall before an API call. Prepended with the canonical
-        `<conversation-state>` block from spec §4.9 so the LLM sees the current
-        `conv_id` / `off_record` on every turn — defeating
-        context-compaction-driven state loss."""
+        """Targeted recall before an API call, prepended with the per-turn
+        injected blocks (spec §4.9 + spec 041): the `<conversation-state>` block
+        (so the LLM sees the current `conv_id` / `off_record`, defeating
+        context-compaction-driven state loss) and the `<librarian>` awareness
+        primer (so every turn reminds the agent it has durable memory).
+
+        Per Decision 5 the primer is emitted from ``prefetch`` (per-turn, not
+        ``system_prompt_block``) and INDEPENDENTLY of the conv-state row gate —
+        it appears even when there is no conv-state row for this session."""
         del session_id  # the ABC's hint; one Librarian endpoint per profile
         recall_text = self._call_text("recall", self._agent_args({"query": query}))
-        return _prefix_with_conv_state(self._fetch_conv_state(), recall_text)
+        return _prefix_with_blocks(self._fetch_conv_state(), recall_text)
 
     def _fetch_conv_state(self) -> dict[str, Any] | None:
-        """Look up the conv_state row for this Hermes session, or None.
+        """Fetch + parse the ``conv_state_get`` response for this Hermes session.
 
-        conv-id convention: `hermes:<session_id>`.
-        Fail-soft: any error returns None, the block is omitted, and the prompt
-        reaches the model unchanged.
+        Returns the parsed JSON object verbatim (or None on any failure). Since
+        spec 041 (A2), the response is ALWAYS a JSON object: with a row it is
+        ``{...row, primer}`` (carries ``conv_id``); with no row it is
+        ``{primer}`` (no ``conv_id``). Callers gate the conv-state block on
+        ``conv_id`` (via :func:`_render_conv_state_block`) and read ``primer``
+        independently, so the awareness primer survives a null row.
+
+        conv-id convention: ``hermes:<session_id>``.
+        Fail-soft: any error returns None, both blocks are omitted, and the
+        prompt reaches the model unchanged.
         """
         if not self._session_id or self._client is None:
             return None
@@ -240,13 +252,13 @@ class LibrarianProvider(_Base):
         except LibrarianClientError as err:
             self._log("warn", f"librarian: conv_state_get failed: {err}")
             return None
-        if not text or text.startswith("No conversation state"):
+        if not text:
             return None
         try:
             parsed = json.loads(text)
         except (TypeError, ValueError):
             return None
-        return parsed if isinstance(parsed, dict) and "conv_id" in parsed else None
+        return parsed if isinstance(parsed, dict) else None
 
     # ---- write (turn persistence — now no-ops; sessions are retired) ----
 
@@ -402,6 +414,19 @@ def _render_conv_state_block(state: dict[str, Any] | None) -> str:
     )
 
 
+def _render_awareness_primer(primer: str) -> str:
+    """Render the awareness primer as a `<librarian>` block (spec 041, Decision 2).
+
+    Byte-identical Python port of the canonical TS renderer:
+    ``primer ? "<librarian>\\n" + primer + "\\n</librarian>" : ""``. Tags at
+    column 0, the primer text verbatim (NOT indented — it is prose), `\\n`-joined;
+    an empty/falsy primer renders nothing.
+    """
+    if not primer:
+        return ""
+    return f"<librarian>\n{primer}\n</librarian>"
+
+
 def _prefix_with_conv_state(state: dict[str, Any] | None, recall_text: str) -> str:
     block = _render_conv_state_block(state)
     if not block:
@@ -409,3 +434,28 @@ def _prefix_with_conv_state(state: dict[str, Any] | None, recall_text: str) -> s
     if not recall_text:
         return block
     return f"{block}\n\n{recall_text}"
+
+
+def _prefix_with_blocks(state: dict[str, Any] | None, recall_text: str) -> str:
+    """Prepend the per-turn injected blocks to ``recall_text``.
+
+    Two independent blocks: the row-gated `<conversation-state>` block, then the
+    awareness `<librarian>` primer block (Decision 5 — emitted whenever the
+    primer is non-empty, **even when there is no conv-state row**). Order is
+    conv-state THEN primer, matching the other plugins (A3–A6).
+    """
+    primer = state.get("primer", "") if isinstance(state, dict) else ""
+    blocks = [
+        b
+        for b in (
+            _render_conv_state_block(state),
+            _render_awareness_primer(primer if isinstance(primer, str) else ""),
+        )
+        if b
+    ]
+    prefix = "\n\n".join(blocks)
+    if not prefix:
+        return recall_text or ""
+    if not recall_text:
+        return prefix
+    return f"{prefix}\n\n{recall_text}"

@@ -11,6 +11,18 @@ changes from this point forward are catalogued here.
 
 ## [Unreleased]
 
+### Added
+
+- **Awareness primer injected every turn (spec 041).** `prefetch()` now emits
+  the operator-authored awareness primer as a `<librarian>` block on every turn,
+  reminding the agent it has durable memory and which verbs to use. The primer
+  is read from the same `conv_state_get` response (no extra call) and rendered
+  byte-identically to the other Librarian plugins. It is emitted **independently
+  of the conv-state row gate** — so the primer appears even on a brand-new
+  conversation that has no conv-state row yet. An empty primer (operator opted
+  out) renders nothing, and any Librarian/parse failure stays fail-soft (no
+  block, the turn proceeds).
+
 ### Changed
 
 - **Conv-state block trimmed to `conv_id` + `off_record` (lockstep).** The

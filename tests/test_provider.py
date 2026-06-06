@@ -16,7 +16,21 @@ from __future__ import annotations
 import json
 
 from librarian.client import LibrarianClientError
-from librarian.provider import LibrarianConfig, LibrarianProvider, load_config, save_config
+from librarian.provider import (
+    LibrarianConfig,
+    LibrarianProvider,
+    _render_awareness_primer,
+    load_config,
+    save_config,
+)
+
+# The default awareness primer (spec 041 Decision 3) — one logical line, no
+# internal newlines. Used to pin the rendered <librarian> block char-for-char.
+_PRIMER = (
+    "You have The Librarian: durable, cross-session memory. Use `recall` to "
+    "check what's already known before asking; use `remember` / `/learn` to "
+    "save durable facts, preferences, and decisions worth keeping."
+)
 
 
 class FakeClient:
@@ -162,3 +176,94 @@ def test_load_and_save_config_round_trip(tmp_path: object) -> None:
 def test_load_config_returns_none_when_token_missing(tmp_path: object) -> None:
     save_config({"endpoint": "https://e/mcp"}, str(tmp_path))
     assert load_config(str(tmp_path), {}) is None
+
+
+# ---- awareness primer (spec 041 PR-7 / Task A7) ----
+
+
+def test_render_awareness_primer_is_byte_identical_to_canonical() -> None:
+    # Canonical (TS): primer ? "<librarian>\n" + primer + "\n</librarian>" : ""
+    assert _render_awareness_primer(_PRIMER) == f"<librarian>\n{_PRIMER}\n</librarian>"
+    assert _render_awareness_primer("hello") == "<librarian>\nhello\n</librarian>"
+    # Tags at col 0, primer verbatim, \n-joined, NOT indented.
+    assert _render_awareness_primer("a\nb") == "<librarian>\na\nb\n</librarian>"
+    # Empty / falsy primer → "" (no block).
+    assert _render_awareness_primer("") == ""
+
+
+def test_prefetch_emits_both_blocks_when_row_and_primer_present() -> None:
+    row = json.dumps({"conv_id": "hermes:sess-1", "off_record": False, "primer": _PRIMER})
+    client = FakeClient({"conv_state_get": row, "recall": "recall body"})
+    p = _provider(client)
+
+    out = p.prefetch("how do I X")
+    # conv-state block first, then the <librarian> primer block, then recall.
+    assert out.startswith("<conversation-state>")
+    assert "conv_id: hermes:sess-1" in out
+    assert f"<librarian>\n{_PRIMER}\n</librarian>" in out
+    assert "recall body" in out
+    assert out.index("</conversation-state>") < out.index("<librarian>")
+
+
+def test_prefetch_emits_primer_block_even_when_row_is_null() -> None:
+    # A2 no-row shape: {primer} only (no conv_id). The bespoke Hermes crux:
+    # the primer must STILL appear even though there's no conv-state row.
+    no_row = json.dumps({"primer": _PRIMER})
+    client = FakeClient({"conv_state_get": no_row, "recall": ""})
+    p = _provider(client)
+
+    out = p.prefetch("q")
+    # No conv-state block (null row), but the <librarian> block survives — pin exact bytes.
+    assert "<conversation-state>" not in out
+    assert out == f"<librarian>\n{_PRIMER}\n</librarian>"
+
+
+def test_prefetch_emits_primer_with_recall_when_row_is_null() -> None:
+    no_row = json.dumps({"primer": _PRIMER})
+    client = FakeClient({"conv_state_get": no_row, "recall": "hits"})
+    p = _provider(client)
+
+    out = p.prefetch("q")
+    assert out == f"<librarian>\n{_PRIMER}\n</librarian>\n\nhits"
+
+
+def test_prefetch_omits_primer_block_when_primer_empty() -> None:
+    # Empty primer (operator disabled it) → no <librarian> block.
+    no_row = json.dumps({"primer": ""})
+    client = FakeClient({"conv_state_get": no_row, "recall": "hits"})
+    p = _provider(client)
+
+    out = p.prefetch("q")
+    assert "<librarian>" not in out
+    assert out == "hits"
+
+
+def test_prefetch_no_block_when_conv_state_throws_fail_soft() -> None:
+    # conv_state_get error → no block at all, the turn proceeds on recall alone.
+    client = FakeClient({"recall": "hits"}, fail={"conv_state_get"})
+    p = _provider(client)
+
+    out = p.prefetch("q")
+    assert "<librarian>" not in out
+    assert "<conversation-state>" not in out
+    assert out == "hits"
+
+
+def test_prefetch_no_block_when_conv_state_returns_non_json() -> None:
+    # Malformed payload (not JSON) → fail-soft, no block, recall passes through.
+    client = FakeClient({"conv_state_get": "not json", "recall": "hits"})
+    p = _provider(client)
+
+    out = p.prefetch("q")
+    assert "<librarian>" not in out
+    assert out == "hits"
+
+
+def test_system_prompt_block_is_not_the_primer_emit_path() -> None:
+    # The primer rides prefetch() (per-turn), NOT system_prompt_block (once at start).
+    row = json.dumps({"conv_id": "hermes:sess-1", "off_record": False, "primer": _PRIMER})
+    client = FakeClient({"conv_state_get": row, "start_context": "context"})
+    p = _provider(client)
+
+    out = p.system_prompt_block()
+    assert "<librarian>" not in out
