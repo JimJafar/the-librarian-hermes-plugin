@@ -11,6 +11,17 @@ changes from this point forward are catalogued here.
 
 ## [Unreleased]
 
+### Changed
+
+- **`/learn` now saves picked lessons via `remember` instead of
+  `propose_memory`.** Picking a lesson in the `/learn` review already _is_ the
+  approval, so the old prompt double-gated it behind a dashboard proposal. The
+  `/learn` prompt now points the model at `remember`, which files non-protected
+  lessons directly (deduped/merged) while the server still routes protected
+  categories (identity, relationship) to the proposal queue. Coordinated with
+  the server fix that routes `propose_memory` through the curator (the-librarian
+  ADR 0004).
+
 ## [0.3.1] — 2026-06-07
 
 ### Fixed

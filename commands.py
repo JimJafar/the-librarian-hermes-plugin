@@ -15,7 +15,8 @@ four user-facing handoff verbs below replace them:
 - ``/takeover`` — list candidate handoffs, atomically claim one,
   inject the document into the conversation.
 - ``/learn`` — extract durable lessons from the conversation and feed
-  them to ``propose_memory``.
+  the user-picked ones to ``remember`` (protected categories still route
+  to proposals server-side).
 - ``/toggle-private`` — flip the in-conversation
   ``[librarian:private=on|off]`` marker. Pure in-context — no server
   flag, no hook, no persisted state. The LLM honours the marker on its
@@ -48,8 +49,10 @@ _TAKEOVER_PROMPT = (
 
 _LEARN_PROMPT = (
     "Extract durable lessons from this conversation and feed user-approved "
-    "ones to `propose_memory`. See the librarian skill for the rejection "
-    "criteria and confirmation contract."
+    "ones to `remember` — the user picking a lesson is the review, so file it "
+    "directly (deduped/merged); the server still routes protected categories "
+    "(identity, relationship) to the proposal queue. See the librarian skill "
+    "for the rejection criteria and confirmation contract."
 )
 
 _TOGGLE_ON = (
@@ -111,7 +114,7 @@ def register_commands(ctx: Any, provider: LibrarianProvider) -> None:
         (
             "learn",
             learn,
-            "Extract durable lessons from this conversation into memory proposals",
+            "Extract durable lessons from this conversation into durable memory",
             "",
         ),
         (
