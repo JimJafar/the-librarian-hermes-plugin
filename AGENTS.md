@@ -86,9 +86,10 @@ include a `Co-Authored-By:` trailer.
 ### Releases
 
 User-visible PRs need a release. Bump-size rule (PATCH / MINOR / MAJOR),
-trigger criteria, and the full per-repo procedure (no embedded version
-file — release is purely a git tag + GitHub release for traceability,
-since Hermes installs by directory clone) live in
+trigger criteria, and the full per-repo procedure (**bump
+`plugin.yaml`'s `version` field to match the release tag**, then git tag +
+GitHub release — Hermes installs by directory clone, but the manifest
+still carries the version, so it must be bumped) live in
 [`docs/release.md`](./docs/release.md); the cross-family runbook
 covering all six repos is at the monorepo's
 [`docs/release-runbook.md`](https://github.com/JimJafar/the-librarian/blob/main/docs/release-runbook.md).
