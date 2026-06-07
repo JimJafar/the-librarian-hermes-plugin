@@ -11,6 +11,16 @@ changes from this point forward are catalogued here.
 
 ## [Unreleased]
 
+## [0.3.1] — 2026-06-07
+
+### Fixed
+
+- **`plugin.yaml` `version` now matches the release tag.** The 0.3.0 release
+  left `plugin.yaml` at `0.2.0` — the release docs wrongly stated Hermes had
+  "no embedded version file." Bumped to `0.3.1`, and corrected `AGENTS.md` +
+  `docs/release.md` so bumping `plugin.yaml`'s `version` is a required release
+  step going forward.
+
 ## [0.3.0] — 2026-06-07
 
 ### Added

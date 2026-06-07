@@ -24,18 +24,18 @@ as the monorepo. PATCH numbers drift freely.
   new env var with a default.
 - **PATCH** — bug fix, doc tweak, internal refactor, test-only change.
 
-## Hermes specifics: no embedded version file
+## Hermes specifics: the version lives in `plugin.yaml`
 
 Hermes installs this plugin by cloning the repo into
-`~/.hermes/plugins/the-librarian-hermes-plugin/` and discovering it by
-directory structure. There's no `package.json`, no `setup.py`, no
-embedded `version` field anywhere. **The release is purely a git tag +
-GitHub release for traceability** — users update via
+`~/.hermes/plugins/librarian/` and discovering it by directory structure
+(there's no `package.json` / `setup.py`). But the manifest **`plugin.yaml`
+carries a `version` field** — **bump it to match the release tag on every
+release.** (v0.3.0 once shipped with `plugin.yaml` still at `0.2.0` because
+this step was missed and these docs wrongly claimed "no embedded version
+file" — don't repeat it.) Users update via
 `hermes plugins update the-librarian-hermes-plugin`, which re-pulls the
-latest commit on the default branch (not the tag).
-
-That means the tag is for *us* (changelog anchor, release notes
-correlation across the family), not for the install path.
+latest commit on the default branch; the tag + GitHub release are the
+changelog anchor and family-wide version correlation.
 
 ## Steps
 
@@ -43,13 +43,14 @@ correlation across the family), not for the install path.
 cd ~/code/the-librarian-hermes-plugin
 git checkout main && git pull
 
-# 1. Move CHANGELOG [Unreleased] entries under [vX.Y.Z] - YYYY-MM-DD.
+# 1. Bump plugin.yaml `version` to X.Y.Z, AND move CHANGELOG [Unreleased]
+#    entries under [vX.Y.Z] - YYYY-MM-DD.
 NEW=<X.Y.Z>
-$EDITOR CHANGELOG.md
+$EDITOR plugin.yaml CHANGELOG.md
 
 # 2. Branch, commit, PR
 git checkout -b release/v$NEW
-git add CHANGELOG.md
+git add plugin.yaml CHANGELOG.md
 git commit -m "chore(release): v$NEW"
 git push -u origin release/v$NEW
 gh pr create --title "chore(release): v$NEW"
