@@ -11,6 +11,8 @@ changes from this point forward are catalogued here.
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-06-07
+
 ### Added
 
 - **Awareness primer injected every turn (spec 041).** `prefetch()` now emits
@@ -147,5 +149,7 @@ memory-provider plugin for
   both the memory-provider loader AND the general plugin loader run
   `register()` (gate + slash commands).
 
-[Unreleased]: https://github.com/JimJafar/the-librarian-hermes-plugin/compare/v0.0.1...HEAD
+[Unreleased]: https://github.com/JimJafar/the-librarian-hermes-plugin/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/JimJafar/the-librarian-hermes-plugin/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/JimJafar/the-librarian-hermes-plugin/compare/v0.0.1...v0.2.0
 [0.0.1]: https://github.com/JimJafar/the-librarian-hermes-plugin/releases/tag/v0.0.1
