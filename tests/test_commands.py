@@ -52,10 +52,13 @@ def test_takeover_surfaces_the_list_then_claim_prompt() -> None:
     assert "claim_handoff" in out
 
 
-def test_learn_surfaces_the_propose_memory_prompt() -> None:
+def test_learn_surfaces_the_remember_prompt() -> None:
     ctx = _registered()
     out = ctx.commands["learn"]["handler"]("")
-    assert "propose_memory" in out
+    # /learn files user-picked lessons via `remember` (the pick is the review);
+    # protected categories still route to proposals server-side.
+    assert "remember" in out
+    assert "propose_memory" not in out
 
 
 def test_toggle_private_emits_marker_template_instruction() -> None:
