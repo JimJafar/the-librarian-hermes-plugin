@@ -9,6 +9,31 @@ This changelog starts at v0.0.1 — the first version likely to see public
 adoption. The pre-v0.0.1 development history lives in the git log; only
 changes from this point forward are catalogued here.
 
+## [0.4.0] — 2026-06-12
+
+### Changed
+
+- **Aligned the provider to The Librarian's 9-verb agent surface (ADR
+  0006).** Three lockstep changes with the server:
+  - **`verify_memory` → `flag_memory`.** The "rate a memory after using
+    it" tool (`{memory_id, result: useful|not_useful|outdated}`) is
+    replaced by a flag tool: `{memory_id, reason}` (both required). The
+    semantics change — there is no positive/"useful" counterpart; you
+    flag a memory you believe is **incorrect, misleading, or outdated**
+    with a free-text reason. It routes to human review and never
+    deletes. `flag_memory` is keyed by `memory_id` (a global primary
+    key), so the provider passes its args through unscoped (no
+    `agent_id`/`project_key` injected), and the `recall` tool blurb now
+    tells the agent to flag a wrong/misleading/outdated memory.
+  - **Dropped the retired `start_context` call.** `system_prompt_block`
+    no longer calls `start_context`; the session/awareness context +
+    working-style it used to fetch now ride the per-turn `conv_state_get`
+    primer (emitted from `prefetch`). `system_prompt_block` renders only
+    the row-gated `<conversation-state>` block — there is no separate
+    recall snapshot injected at session start anymore.
+  - **`propose_memory` → `remember`** in the `/toggle-private`
+    private-mode instruction text (the only remaining reference).
+
 ## [0.3.2] — 2026-06-08
 
 ### Changed
@@ -175,6 +200,7 @@ memory-provider plugin for
   both the memory-provider loader AND the general plugin loader run
   `register()` (gate + slash commands).
 
+[0.4.0]: https://github.com/JimJafar/the-librarian-hermes-plugin/compare/v0.3.2...v0.4.0
 [0.3.2]: https://github.com/JimJafar/the-librarian-hermes-plugin/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/JimJafar/the-librarian-hermes-plugin/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/JimJafar/the-librarian-hermes-plugin/compare/v0.2.0...v0.3.0

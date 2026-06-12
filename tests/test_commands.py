@@ -66,6 +66,10 @@ def test_toggle_private_emits_marker_template_instruction() -> None:
     out = ctx.commands["toggle-private"]["handler"]("")
     assert "[librarian:private=on]" in out
     assert "[librarian:private=off]" in out
+    # The private-mode instruction gates `remember` (ADR 0006 9-verb surface);
+    # the retired `propose_memory` verb must not appear.
+    assert "remember" in out
+    assert "propose_memory" not in out
 
 
 def test_register_is_a_no_op_when_ctx_lacks_register_command() -> None:
