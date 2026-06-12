@@ -57,9 +57,9 @@ _LEARN_PROMPT = (
 
 _TOGGLE_ON = (
     "Private mode is ON. `[librarian:private=on]` — do not call `remember` "
-    "or `propose_memory` until told otherwise. Recall is still allowed. "
-    "/handoff and /learn require explicit user confirmation. Remain in this "
-    "state until explicitly toggled off."
+    "until told otherwise. Recall is still allowed. /handoff and /learn "
+    "require explicit user confirmation. Remain in this state until "
+    "explicitly toggled off."
 )
 
 _TOGGLE_OFF = "Private mode is OFF. `[librarian:private=off]` — normal operation resumed."

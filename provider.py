@@ -6,7 +6,7 @@ Maps the Hermes ``MemoryProvider`` hooks onto Librarian MCP tools (via
 - **Memory-only after sessions-rethink PR 5.** The session subsystem
   (start/checkpoint/pause/end/resume, the natural-language privacy gate,
   the local state-store) is retired. The provider's surface is now:
-  recall + remember + verify_memory MCP tools, plus per-turn
+  recall + remember + flag_memory MCP tools, plus per-turn
   conv-state injection into the system prompt (spec §4.9). The four
   user-facing verbs (/handoff, /takeover, /learn, /toggle-private) are
   exposed through ``commands.py`` and call the MCP layer directly.
@@ -210,11 +210,17 @@ class LibrarianProvider(_Base):
     # ---- read (prefetch + system-prompt block) ----
 
     def system_prompt_block(self) -> str:
-        """Frozen recall snapshot injected once at session start (cache-friendly,
-        matching the built-in). The conv-state block is prepended on every call
-        so the LLM sees the current `conv_id` / `off_record`."""
-        recall_text = self._call_text("start_context", self._agent_args({}))
-        return _prefix_with_conv_state(self._fetch_conv_state(), recall_text)
+        """Conv-state snapshot injected at session start (cache-friendly,
+        matching the built-in).
+
+        ADR 0006 (9-verb surface) retired ``start_context``; the session /
+        awareness context + working-style it used to fetch now ride the
+        per-turn ``conv_state_get`` primer (emitted from :meth:`prefetch`).
+        So this block carries only the row-gated ``<conversation-state>``
+        block — there is no separate recall snapshot to inject here. The
+        awareness ``<librarian>`` primer is deliberately NOT emitted here;
+        it is per-turn (Decision 5)."""
+        return _prefix_with_conv_state(self._fetch_conv_state(), "")
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         """Targeted recall before an API call, prepended with the per-turn
@@ -313,8 +319,9 @@ class LibrarianProvider(_Base):
                 "description": (
                     "Recall durable memories from The Librarian. Each line is "
                     "prefixed with the memory's id in brackets (e.g. `[mem_...]`) "
-                    "— pass that id to `verify_memory` after using a result so "
-                    "the store learns which recalls were load-bearing."
+                    "— if a recalled memory turns out to be wrong, misleading, or "
+                    "outdated, pass that id to `flag_memory` with a `reason` so a "
+                    "human can review it."
                 ),
                 "parameters": {
                     "type": "object",
@@ -336,36 +343,36 @@ class LibrarianProvider(_Base):
                 },
             },
             {
-                "name": "verify_memory",
+                "name": "flag_memory",
                 "description": (
-                    "Record a verdict against a memory after recalling it. "
-                    "`useful` raises its recall rank, `not_useful` lowers it, "
-                    "`outdated` archives it. The `memory_id` is the id in "
-                    "brackets from the preceding `recall` line."
+                    "Flag a memory you believe is incorrect, misleading, or "
+                    "outdated, with a free-text `reason` explaining why. This "
+                    "routes the memory to human review — it never deletes it, "
+                    "and there is no positive counterpart. The `memory_id` is "
+                    "the id in brackets from a preceding `recall` line."
                 ),
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "memory_id": {"type": "string"},
-                        "result": {
-                            "type": "string",
-                            "enum": ["useful", "not_useful", "outdated"],
-                        },
+                        "reason": {"type": "string"},
                     },
-                    "required": ["memory_id", "result"],
+                    "required": ["memory_id", "reason"],
                 },
             },
         ]
 
     def handle_tool_call(self, tool_name: str, args: dict[str, Any], **kwargs: Any) -> str:
         del kwargs
-        if tool_name not in {"recall", "remember", "verify_memory"}:
+        if tool_name not in {"recall", "remember", "flag_memory"}:
             return f"Unknown Librarian tool: {tool_name}"
         if not isinstance(args, dict):
             return f"The Librarian tool {tool_name} expects an object of arguments."
-        scoped = self._agent_args(dict(args)) if tool_name != "verify_memory" else dict(args)
-        # Agent-driven recall always asks for ids so the next-turn
-        # verify_memory has something to target.
+        # flag_memory is keyed by memory_id (a global primary key), so it is
+        # NOT agent/project scoped — pass its args through verbatim.
+        scoped = self._agent_args(dict(args)) if tool_name != "flag_memory" else dict(args)
+        # Agent-driven recall always asks for ids so a later flag_memory has
+        # something to target.
         if tool_name == "recall":
             scoped.setdefault("include_ids", True)
         return self._call_text(tool_name, scoped)

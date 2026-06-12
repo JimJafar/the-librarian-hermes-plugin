@@ -1,11 +1,14 @@
-"""Provider mapping tests — sessions-rethink PR 5 (memory-only surface).
+"""Provider mapping tests — ADR 0006 (9-verb memory-only surface).
 
 Covers:
-- recall / remember / verify_memory MCP tool mapping
+- recall / remember / flag_memory MCP tool mapping
 - on_memory_write("add") mirrors to `remember`; other actions are no-ops
 - prefetch + system_prompt_block prepend the canonical
   <conversation-state> block (conv_id + off_record only) on conv_state_get hits
 - prefetch + system_prompt_block stay silent on conv_state_get misses
+- system_prompt_block no longer calls the retired `start_context`; it
+  renders only the conv-state block (the awareness context now rides the
+  per-turn conv_state_get primer in prefetch)
 - sync_turn, on_pre_compress, on_session_end are no-ops (no session
   surface anymore — they accept the ABC's call shape but contribute
   nothing)
@@ -57,24 +60,27 @@ def _provider(client: FakeClient | None = None) -> LibrarianProvider:
     return p
 
 
-def test_handle_tool_call_routes_recall_remember_verify() -> None:
-    client = FakeClient({"recall": "results", "remember": "ok", "verify_memory": "noted"})
+def test_handle_tool_call_routes_recall_remember_flag() -> None:
+    client = FakeClient({"recall": "results", "remember": "ok", "flag_memory": "flagged"})
     p = _provider(client)
 
     assert p.handle_tool_call("recall", {"query": "x"}) == "results"
     assert p.handle_tool_call("remember", {"title": "t", "body": "b"}) == "ok"
-    verify_args = {"memory_id": "mem_1", "result": "useful"}
-    assert p.handle_tool_call("verify_memory", verify_args) == "noted"
+    flag_args = {"memory_id": "mem_1", "reason": "this contradicts the new schema"}
+    assert p.handle_tool_call("flag_memory", flag_args) == "flagged"
 
-    # recall must auto-include ids so verify_memory has something to target.
+    # recall must auto-include ids so a later flag_memory has something to target.
     recall_call = next(c for c in client.calls if c[0] == "recall")
     assert recall_call[1].get("include_ids") is True
-    # remember + recall carry the agent_id; verify_memory does not (it is keyed by memory_id).
+    # remember + recall carry the agent_id; flag_memory does not (it is keyed by memory_id).
     assert recall_call[1].get("agent_id") == "agent-a"
     remember_call = next(c for c in client.calls if c[0] == "remember")
     assert remember_call[1].get("agent_id") == "agent-a"
-    verify_call = next(c for c in client.calls if c[0] == "verify_memory")
-    assert "agent_id" not in verify_call[1]
+    # flag_memory is keyed by memory_id and carries a free-text reason verbatim,
+    # with no agent/project scoping injected.
+    flag_call = next(c for c in client.calls if c[0] == "flag_memory")
+    assert flag_call[1] == {"memory_id": "mem_1", "reason": "this contradicts the new schema"}
+    assert "agent_id" not in flag_call[1]
 
 
 def test_handle_tool_call_rejects_unknown_tools() -> None:
@@ -131,14 +137,14 @@ def test_prefetch_returns_empty_string_when_conv_state_throws() -> None:
     assert out == ""
 
 
-def test_system_prompt_block_prepends_conv_state_block_on_a_hit() -> None:
+def test_system_prompt_block_renders_only_the_conv_state_block_on_a_hit() -> None:
     row = json.dumps(
         {
             "conv_id": "hermes:sess-1",
             "off_record": True,
         }
     )
-    client = FakeClient({"conv_state_get": row, "start_context": "context"})
+    client = FakeClient({"conv_state_get": row})
     p = _provider(client)
     out = p.system_prompt_block()
     assert out.startswith("<conversation-state>")
@@ -147,7 +153,25 @@ def test_system_prompt_block_prepends_conv_state_block_on_a_hit() -> None:
     # The retired domain / session_id lines must not appear in the trimmed block.
     assert "domain" not in out
     assert "session_id" not in out
-    assert "context" in out
+    # ADR 0006 retired start_context — system_prompt_block must not call it,
+    # and the block is exactly the conv-state block (no recall snapshot).
+    assert "start_context" not in {name for name, _ in client.calls}
+    assert out == (
+        "<conversation-state>\n  conv_id: hermes:sess-1\n  off_record: true\n</conversation-state>"
+    )
+
+
+def test_system_prompt_block_does_not_call_start_context() -> None:
+    # ADR 0006 dropped start_context; the awareness context now rides the
+    # per-turn conv_state_get primer. system_prompt_block fires exactly one
+    # Librarian call (conv_state_get) and never the retired start_context.
+    row = json.dumps({"conv_id": "hermes:sess-1", "off_record": False})
+    client = FakeClient({"conv_state_get": row})
+    p = _provider(client)
+    p.system_prompt_block()
+    called = [name for name, _ in client.calls]
+    assert called == ["conv_state_get"]
+    assert "start_context" not in called
 
 
 def test_retired_lifecycle_methods_are_silent_no_ops() -> None:
@@ -262,7 +286,7 @@ def test_prefetch_no_block_when_conv_state_returns_non_json() -> None:
 def test_system_prompt_block_is_not_the_primer_emit_path() -> None:
     # The primer rides prefetch() (per-turn), NOT system_prompt_block (once at start).
     row = json.dumps({"conv_id": "hermes:sess-1", "off_record": False, "primer": _PRIMER})
-    client = FakeClient({"conv_state_get": row, "start_context": "context"})
+    client = FakeClient({"conv_state_get": row})
     p = _provider(client)
 
     out = p.system_prompt_block()
